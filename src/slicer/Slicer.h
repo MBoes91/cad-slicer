@@ -5,6 +5,7 @@
 
 #include <TopoDS_Shape.hxx>
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -27,6 +28,7 @@ struct SlicedLayer {
 
 struct SliceResult {
     bool ok = false;
+    bool cancelled = false;
     std::string error;
     std::string gcode;
     std::vector<SlicedLayer> layers;   // fuer die Schichtvorschau
@@ -40,6 +42,8 @@ struct SliceResult {
 
 // Slicer: Koerper -> Schichten -> Wand/Fuellung -> Marlin-G-Code.
 // Das Teil wird mittig auf das Druckbett gestellt (tiefster Punkt auf Z=0).
-SliceResult slice(const TopoDS_Shape& body, const PrinterProfile& profile);
+// progress(0..1) wird regelmaessig aufgerufen; gibt sie false zurueck, wird abgebrochen.
+using ProgressFn = std::function<bool(double)>;
+SliceResult slice(const TopoDS_Shape& body, const PrinterProfile& profile, const ProgressFn& progress = {});
 
 } // namespace fw

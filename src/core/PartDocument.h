@@ -35,6 +35,12 @@ public:
 
     bool exportStl(const std::string& path) const;
 
+    // Dateiformat .fwpart (Text, zeilenweise). fromText ersetzt den Inhalt.
+    std::string toText() const;
+    bool fromText(const std::string& text, std::string* error = nullptr);
+    void clear(std::string name = "Bauteil1");
+    void setName(std::string name) { m_name = std::move(name); }
+
 private:
     std::string m_name;
     std::vector<FeaturePtr> m_features;

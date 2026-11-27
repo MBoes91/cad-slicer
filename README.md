@@ -10,6 +10,11 @@ Technik: C++17, Qt 6 (Oberfläche), OpenCascade (CAD-Kernel), Clipper (2D-Polygo
 
 ## Stand (Version 0.1)
 
+**Allgemein**
+- Datei-Menü: Neu, Öffnen, Zuletzt geöffnet, Speichern (unter) im eigenen Format `.fwpart`
+- Rückgängig/Wiederholen (Strg+Z / Strg+Y) für alle Modelländerungen
+- Slicen im Hintergrund mit Fortschrittsanzeige und Abbrechen
+
 **Modellieren**
 - Multifunktionsleiste mit den Registern *3D-Modell*, *Ansicht* und *3D-Druck*
 - Modellbrowser mit Feature-Baum: Doppelklick bearbeitet, Rechtsklick bietet Unterdrücken und Löschen
@@ -32,15 +37,15 @@ Technik: C++17, Qt 6 (Oberfläche), OpenCascade (CAD-Kernel), Clipper (2D-Polygo
 - Farbige Schichtvorschau auf dem Druckbett, Druckzeit- und Filamentschätzung
 - G-Code mit `;LAYER:` / `;TYPE:`-Kommentaren (kompatibel mit gängigen G-Code-Viewern)
 
-**Tastenkürzel:** S Skizze · E Extrusion · R Drehung · F6 Ausgangsansicht · Strg+R Slicen · Strg+G G-Code speichern
+**Tastenkürzel:** Strg+N/O/S Datei · Strg+Z/Y Rückgängig/Wiederholen · S Skizze · E Extrusion · R Drehung · F6 Ausgangsansicht · Strg+R Slicen · Strg+G G-Code speichern
 
 **Maus:** Rad = Zoom · Mittlere Taste = Verschieben · Umschalt+Mitte oder Rechts = Drehen
 
 ## Nächste Schritte
 
-1. Echter Skizzen-Modus: Linien, Bögen, Abhängigkeiten (horizontal, vertikal, parallel, koinzident) mit Solver
+1. Interaktiver Skizzen-Modus: Linien, Bögen, Abhängigkeiten (horizontal, vertikal, parallel, koinzident) mit Solver
 2. Skizzen auf Bauteilflächen, Bohrung, Fase/Rundung
-3. Speichern/Laden im eigenen Dateiformat
+3. STEP-Import/-Export, STL-Import
 4. Slicer: Modifikator-Körper (Infill-Zonen, Stützen erzwingen/sperren), Baumstützen
 
 ## Programm unter Windows 10 holen

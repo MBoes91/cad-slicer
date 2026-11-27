@@ -177,9 +177,14 @@ void addLoops(std::vector<ToolPath>& out, const Paths& paths, PathType type)
 
 } // namespace
 
-SliceResult slice(const TopoDS_Shape& bodyIn, const PrinterProfile& pp)
+struct Cancelled {};
+
+SliceResult slice(const TopoDS_Shape& bodyIn, const PrinterProfile& pp, const ProgressFn& progress)
 {
     SliceResult res;
+    auto report = [&](double f) {
+        if (progress && !progress(std::min(1.0, std::max(0.0, f)))) throw Cancelled{};
+    };
     if (bodyIn.IsNull()) { res.error = "Kein Koerper zum Slicen vorhanden"; return res; }
 
     try {
@@ -201,6 +206,7 @@ SliceResult slice(const TopoDS_Shape& bodyIn, const PrinterProfile& pp)
         move.SetTranslation(gp_Vec(pp.bedX / 2 - (x0 + x1) / 2, pp.bedY / 2 - (y0 + y1) / 2, -z0));
         const TopoDS_Shape body = BRepBuilderAPI_Transform(bodyIn, move, true).Shape();
 
+        report(0.0);
         const std::vector<Triangle> tris = triangulate(body);
         if (tris.empty()) { res.error = "Triangulierung fehlgeschlagen"; return res; }
 
@@ -212,6 +218,7 @@ SliceResult slice(const TopoDS_Shape& bodyIn, const PrinterProfile& pp)
         const size_t n = tops.size();
         std::vector<Paths> region(n);
         for (size_t i = 0; i < n; ++i) {
+            report(0.05 + 0.30 * static_cast<double>(i) / static_cast<double>(n));
             const double h = i == 0 ? pp.firstLayerHeight : pp.layerHeight;
             const double zMid = tops[i] - h / 2.0;
             Paths raw;
@@ -249,6 +256,7 @@ SliceResult slice(const TopoDS_Shape& bodyIn, const PrinterProfile& pp)
             for (size_t j = 1; j < n; ++j)
                 below[j] = boolean(below[j - 1], region[j - 1], ClipperLib::ctUnion);
             for (size_t jj = n; jj-- > 0;) {
+                report(0.35 + 0.15 * static_cast<double>(n - jj) / static_cast<double>(n));
                 const size_t src = jj + 1 + gap;
                 if (src < n && !overhang[src].empty())
                     carry = boolean(carry, overhang[src], ClipperLib::ctUnion);
@@ -267,6 +275,7 @@ SliceResult slice(const TopoDS_Shape& bodyIn, const PrinterProfile& pp)
         // --- Werkzeugwege je Schicht -------------------------------------------
         res.layers.resize(n);
         for (size_t i = 0; i < n; ++i) {
+            report(0.50 + 0.30 * static_cast<double>(i) / static_cast<double>(n));
             SlicedLayer& L = res.layers[i];
             L.z = tops[i];
             L.height = i == 0 ? pp.firstLayerHeight : pp.layerHeight;
@@ -353,6 +362,7 @@ SliceResult slice(const TopoDS_Shape& bodyIn, const PrinterProfile& pp)
         g.comment("LAYER_COUNT:" + std::to_string(n));
 
         for (size_t i = 0; i < n; ++i) {
+            report(0.80 + 0.20 * static_cast<double>(i) / static_cast<double>(n));
             SlicedLayer& L = res.layers[i];
             g.comment("LAYER:" + std::to_string(i));
             for (const auto& e : L.events) g.heightEvent(e);
@@ -437,6 +447,10 @@ SliceResult slice(const TopoDS_Shape& bodyIn, const PrinterProfile& pp)
                << std::setprecision(4) << ";Filament used: " << res.filamentMm / 1000.0 << "m\n";
         res.gcode = header.str() + g.str();
         res.ok = true;
+    } catch (const Cancelled&) {
+        res = SliceResult{};
+        res.cancelled = true;
+        res.error = "Abgebrochen";
     } catch (const Standard_Failure& e) {
         res.error = std::string("Geometriefehler: ") + (e.GetMessageString() ? e.GetMessageString() : "");
     } catch (const std::exception& e) {

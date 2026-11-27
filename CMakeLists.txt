@@ -44,7 +44,7 @@ target_link_libraries(formwerk_slicer PUBLIC formwerk_core ${CLIPPER_LIBRARY})
 
 # --- Desktop-Anwendung ---------------------------------------------------------
 if(FORMWERK_BUILD_APP)
-  find_package(Qt6 REQUIRED COMPONENTS Widgets)
+  find_package(Qt6 REQUIRED COMPONENTS Widgets Concurrent)
   set(CMAKE_AUTOMOC ON)
   add_executable(formwerk WIN32
     src/app/main.cpp
@@ -52,7 +52,7 @@ if(FORMWERK_BUILD_APP)
     src/app/OcctView.cpp
     src/app/Dialogs.cpp
     src/app/ToolpathPreview.cpp)
-  target_link_libraries(formwerk PRIVATE formwerk_slicer Qt6::Widgets TKService TKV3d TKOpenGl)
+  target_link_libraries(formwerk PRIVATE formwerk_slicer Qt6::Widgets Qt6::Concurrent TKService TKV3d TKOpenGl)
 endif()
 
 # --- Tests -----------------------------------------------------------------------

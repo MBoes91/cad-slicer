@@ -183,8 +183,47 @@ static void testSupports()
             for (const auto& v : tp.points) CHECK(v.x < 105.0 - 0.5 || v.x > 115.0 + 0.5);
 }
 
+static void testFileRoundtrip()
+{
+    fw::PartDocument doc("Halter");
+    auto sk = std::make_shared<fw::Sketch>("Skizze1", fw::SketchPlane::XZ, 2.5);
+    sk->rectangles().push_back({0, 0, 10.25, 20});
+    sk->circles().push_back({5, 5, 1.5});
+    doc.addFeature(sk);
+    auto ex = std::make_shared<fw::ExtrudeFeature>("Extrusion1", sk, -7.5, fw::BooleanOp::Join, true);
+    ex->setSuppressed(true);
+    doc.addFeature(ex);
+    doc.addFeature(std::make_shared<fw::RevolveFeature>("Drehung1", sk, fw::RevolveAxis::SketchX, 90.0));
+    const std::string text = doc.toText();
+
+    fw::PartDocument copy;
+    std::string err;
+    CHECK(copy.fromText(text, &err));
+    CHECK(copy.toText() == text);
+    CHECK(copy.name() == "Halter" && copy.features().size() == 3);
+    auto e2 = std::dynamic_pointer_cast<fw::ExtrudeFeature>(copy.features()[1]);
+    CHECK(e2 && e2->isSuppressed() && e2->symmetric() && e2->sketch() == copy.features()[0]);
+    CHECK(!copy.fromText("format = 1\nextrude = E;sketch=Fehlt;distance=1;op=0\n", &err));
+    CHECK(copy.features().size() == 3); // bei Fehler unveraendert
+}
+
+static void testCancel()
+{
+    fw::PartDocument doc;
+    auto sk = std::make_shared<fw::Sketch>("Skizze1", fw::SketchPlane::XY);
+    sk->rectangles().push_back({0, 0, 20, 20});
+    doc.addFeature(sk);
+    doc.addFeature(std::make_shared<fw::ExtrudeFeature>("Extrusion1", sk, 5.0));
+    CHECK(doc.recompute());
+    int calls = 0;
+    fw::SliceResult r = fw::slice(doc.body(), fw::PrinterProfile{}, [&calls](double) { return ++calls < 5; });
+    CHECK(!r.ok && r.cancelled);
+}
+
 int main()
 {
+    testFileRoundtrip();
+    testCancel();
     testSupports();
     testProfilesAndEvents();
     testExtrudeWithHole();

@@ -21,6 +21,12 @@
 #include <QMessageBox>
 #include <QPainter>
 #include <QPainterPath>
+#include <QCloseEvent>
+#include <QFileInfo>
+#include <QProgressBar>
+#include <QPushButton>
+#include <QStyle>
+#include <QtConcurrent/QtConcurrentRun>
 #include <QSettings>
 #include <QSlider>
 #include <QStatusBar>
@@ -170,14 +176,31 @@ QWidget* makeRibbonPage(const QList<QWidget*>& panels)
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
 {
-    setWindowTitle("FormWerk – Bauteil1");
     resize(1400, 900);
 
     m_view = new OcctView(this);
     setCentralWidget(m_view);
 
+    m_sliceWatcher = new QFutureWatcher<fw::SliceResult>(this);
+    connect(m_sliceWatcher, &QFutureWatcher<fw::SliceResult>::finished, this, [this] { sliceFinished(); });
+    m_progressBar = new QProgressBar;
+    m_progressBar->setRange(0, 100);
+    m_progressBar->setMaximumWidth(220);
+    m_progressBar->setFormat("Slicen … %p %");
+    m_progressBar->hide();
+    m_cancelButton = new QPushButton("Abbrechen");
+    m_cancelButton->hide();
+    connect(m_cancelButton, &QPushButton::clicked, this, [this] { m_cancelSlice = true; });
+    statusBar()->addPermanentWidget(m_progressBar);
+    statusBar()->addPermanentWidget(m_cancelButton);
+    m_progressTimer = new QTimer(this);
+    connect(m_progressTimer, &QTimer::timeout, this, [this] {
+        m_progressBar->setValue(static_cast<int>(m_sliceProgress.load() * 100));
+    });
+
     buildRibbon();
     buildBrowser();
+    buildFileMenu();
 
     statusBar()->showMessage(QString::fromUtf8(
         "Mausrad: Zoom  ·  Mittlere Maustaste: Verschieben  ·  Umschalt+Mitte oder Rechts: Drehen  ·  F6: Ausgangsansicht"));
@@ -288,6 +311,60 @@ void MainWindow::buildRibbon()
     addToolBar(Qt::TopToolBarArea, tb);
 }
 
+void MainWindow::buildFileMenu()
+{
+    auto* fileButton = new QToolButton;
+    fileButton->setText("Datei");
+    fileButton->setPopupMode(QToolButton::InstantPopup);
+    fileButton->setStyleSheet("QToolButton { background: #2f6fbf; color: white; padding: 3px 14px; font-weight: bold; border: none; }"
+                              "QToolButton::menu-indicator { image: none; }");
+    auto* menu = new QMenu(fileButton);
+    auto add = [this, menu](const QString& text, const QKeySequence& key, auto slot) {
+        QAction* a = menu->addAction(text, this, slot);
+        a->setShortcut(key);
+        addAction(a);
+        return a;
+    };
+    add("Neu", QKeySequence::New, [this] { cmdNew(); });
+    add(QString::fromUtf8("Öffnen …"), QKeySequence::Open, [this] { cmdOpen(); });
+    m_recentMenu = menu->addMenu(QString::fromUtf8("Zuletzt geöffnet"));
+    menu->addSeparator();
+    add("Speichern", QKeySequence::Save, [this] { cmdSave(); });
+    add("Speichern unter …", QKeySequence("Ctrl+Shift+S"), [this] { cmdSaveAs(); });
+    menu->addSeparator();
+    add("STL exportieren …", {}, [this] { cmdExportStl(); });
+    add("G-Code speichern …", {}, [this] { cmdSaveGcode(); });
+    menu->addSeparator();
+    add("Beenden", QKeySequence("Ctrl+Q"), [this] { close(); });
+    fileButton->setMenu(menu);
+    updateRecentMenu();
+
+    m_undoAction = new QAction(style()->standardIcon(QStyle::SP_ArrowBack), QString::fromUtf8("Rückgängig"), this);
+    m_undoAction->setShortcut(QKeySequence::Undo);
+    m_undoAction->setToolTip(QString::fromUtf8("Rückgängig (Strg+Z)"));
+    connect(m_undoAction, &QAction::triggered, this, [this] { cmdUndo(); });
+    addAction(m_undoAction);
+    m_redoAction = new QAction(style()->standardIcon(QStyle::SP_ArrowForward), "Wiederholen", this);
+    m_redoAction->setShortcuts({QKeySequence::Redo, QKeySequence("Ctrl+Y")});
+    m_redoAction->setToolTip("Wiederholen (Strg+Y)");
+    connect(m_redoAction, &QAction::triggered, this, [this] { cmdRedo(); });
+    addAction(m_redoAction);
+
+    auto* corner = new QWidget;
+    auto* h = new QHBoxLayout(corner);
+    h->setContentsMargins(0, 0, 8, 0);
+    h->setSpacing(2);
+    h->addWidget(fileButton);
+    for (QAction* a : {m_undoAction, m_redoAction}) {
+        auto* b = new QToolButton;
+        b->setDefaultAction(a);
+        b->setAutoRaise(true);
+        h->addWidget(b);
+    }
+    m_ribbon->setCornerWidget(corner, Qt::TopLeftCorner);
+    updateTitle();
+}
+
 void MainWindow::buildBrowser()
 {
     m_browser = new QTreeWidget;
@@ -332,6 +409,7 @@ void MainWindow::loadDemoPart()
     m_doc.addFeature(sk2);
     m_doc.addFeature(std::make_shared<fw::ExtrudeFeature>("Extrusion2", sk2, 15.0));
 
+    resetHistory();
     QTimer::singleShot(150, this, [this] { rebuild(true); });
 }
 
@@ -351,6 +429,20 @@ fw::FeaturePtr MainWindow::featureOf(QTreeWidgetItem* item) const
 
 void MainWindow::rebuild(bool fit)
 {
+    // Verlauf fuer Rueckgaengig: Zustand vor der Aenderung merken
+    const std::string text = m_doc.toText();
+    if (text != m_lastText) {
+        if (!m_restoring) {
+            m_undo.push_back(m_lastText);
+            if (m_undo.size() > 200) m_undo.erase(m_undo.begin());
+            m_redo.clear();
+        }
+        m_lastText = text;
+        m_modified = true;
+    }
+    ++m_generation;
+    updateTitle();
+
     const bool ok = m_doc.recompute();
     m_slice = fw::SliceResult{}; // Slicing ist nach Modellaenderung veraltet
     if (m_printPreview) setPrintPreview(false);
@@ -538,10 +630,55 @@ void MainWindow::cmdExportStl()
 
 void MainWindow::cmdSlice()
 {
-    QApplication::setOverrideCursor(Qt::WaitCursor);
-    m_slice = fw::slice(m_doc.body(), m_profile);
-    QApplication::restoreOverrideCursor();
+    startSlice({});
+}
 
+void MainWindow::startSlice(std::function<void()> then)
+{
+    if (m_sliceWatcher->isRunning()) return;
+    if (m_doc.body().IsNull()) {
+        QMessageBox::information(this, "Slicen", "Es ist noch kein Körper vorhanden.");
+        return;
+    }
+    m_afterSlice = std::move(then);
+    m_cancelSlice = false;
+    m_sliceProgress = 0.0;
+    m_sliceGeneration = m_generation;
+    m_progressBar->setValue(0);
+    m_progressBar->show();
+    m_cancelButton->show();
+    m_progressTimer->start(100);
+
+    const TopoDS_Shape body = m_doc.body();
+    const fw::PrinterProfile profile = m_profile;
+    auto* progress = &m_sliceProgress;
+    auto* cancel = &m_cancelSlice;
+    m_sliceWatcher->setFuture(QtConcurrent::run([body, profile, progress, cancel] {
+        return fw::slice(body, profile, [progress, cancel](double f) {
+            progress->store(f);
+            return !cancel->load();
+        });
+    }));
+}
+
+void MainWindow::sliceFinished()
+{
+    m_progressTimer->stop();
+    m_progressBar->hide();
+    m_cancelButton->hide();
+    fw::SliceResult result = m_sliceWatcher->result();
+    auto then = std::move(m_afterSlice);
+    m_afterSlice = {};
+
+    if (result.cancelled) {
+        statusBar()->showMessage("Slicen abgebrochen", 4000);
+        return;
+    }
+    if (m_sliceGeneration != m_generation) {
+        statusBar()->showMessage(QString::fromUtf8("Modell wurde während des Slicens geändert, bitte erneut slicen"), 6000);
+        return;
+    }
+    m_slice = std::move(result);
     if (!m_slice.ok) {
         QMessageBox::warning(this, "Slicen", QString::fromStdString(m_slice.error));
         return;
@@ -559,15 +696,19 @@ void MainWindow::cmdSlice()
         QMessageBox::information(this, "Slicen", w.join("\n"));
     }
     m_ribbon->setCurrentIndex(2);
+    if (m_printPreview) setPrintPreview(false);
     setPrintPreview(true);
+    if (then) then();
 }
 
 void MainWindow::cmdSaveGcode()
 {
-    if (!m_slice.ok) cmdSlice();
-    if (!m_slice.ok) return;
-    const QString path = QFileDialog::getSaveFileName(this, "G-Code speichern",
-        QString::fromStdString(m_doc.name()) + ".gcode", "G-Code (*.gcode)");
+    if (!m_slice.ok) {
+        startSlice([this] { if (m_slice.ok) cmdSaveGcode(); });
+        return;
+    }
+    QString base = m_filePath.isEmpty() ? QString::fromStdString(m_doc.name()) : QFileInfo(m_filePath).completeBaseName();
+    const QString path = QFileDialog::getSaveFileName(this, "G-Code speichern", base + ".gcode", "G-Code (*.gcode)");
     if (path.isEmpty()) return;
     QFile file(path);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
@@ -588,13 +729,17 @@ void MainWindow::cmdPrintSettings()
     const bool wasPreview = m_printPreview;
     m_slice = fw::SliceResult{};
     if (m_printPreview) setPrintPreview(false);
-    if (wasPreview) cmdSlice();
+    if (wasPreview) startSlice({});
 }
 
 void MainWindow::setPrintPreview(bool on)
 {
     const auto& ctx = m_view->context();
-    if (on && !m_slice.ok) { cmdSlice(); return; }
+    if (on && !m_slice.ok) {
+        m_previewAction->setChecked(false);
+        startSlice({});
+        return;
+    }
     m_printPreview = on;
     m_previewAction->setChecked(on);
     m_layerSlider->setEnabled(on);
@@ -626,8 +771,10 @@ void MainWindow::setPrintPreview(bool on)
 
 void MainWindow::cmdAddEventAtLayer()
 {
-    if (!m_slice.ok) cmdSlice();
-    if (!m_slice.ok) return;
+    if (!m_slice.ok) {
+        startSlice([this] { if (m_slice.ok) cmdAddEventAtLayer(); });
+        return;
+    }
     if (!m_printPreview) setPrintPreview(true);
     const int layer = m_layerSlider->value();
     const auto& L = m_slice.layers[static_cast<size_t>(layer - 1)];
@@ -635,8 +782,7 @@ void MainWindow::cmdAddEventAtLayer()
     if (dlg.exec() != QDialog::Accepted) return;
     m_profile.events.push_back(dlg.event());
     QSettings().setValue("druckprofil", QByteArray::fromStdString(fw::serializeProfile(m_profile)));
-    cmdSlice();
-    m_layerSlider->setValue(layer);
+    startSlice([this, layer] { m_layerSlider->setValue(layer); });
 }
 
 void MainWindow::updatePreview()
@@ -653,4 +799,173 @@ void MainWindow::updatePreview()
         text += QString::fromUtf8("  ·  ⚑ ") + QString::fromUtf8(fw::heightEventName(e.type));
     m_layerLabel->setText(text);
     m_view->redraw();
+}
+
+// --- Datei ---------------------------------------------------------------------
+
+void MainWindow::resetHistory()
+{
+    m_undo.clear();
+    m_redo.clear();
+    m_lastText = m_doc.toText();
+    m_modified = false;
+    updateTitle();
+}
+
+void MainWindow::updateTitle()
+{
+    const QString name = m_filePath.isEmpty() ? QString::fromStdString(m_doc.name()) : QFileInfo(m_filePath).fileName();
+    setWindowTitle(QString("%1%2 – FormWerk").arg(name, m_modified ? "*" : ""));
+    if (m_undoAction) m_undoAction->setEnabled(!m_undo.empty());
+    if (m_redoAction) m_redoAction->setEnabled(!m_redo.empty());
+}
+
+void MainWindow::cmdUndo()
+{
+    if (m_undo.empty()) return;
+    m_redo.push_back(m_lastText);
+    const std::string text = m_undo.back();
+    m_undo.pop_back();
+    restoreText(text);
+}
+
+void MainWindow::cmdRedo()
+{
+    if (m_redo.empty()) return;
+    m_undo.push_back(m_lastText);
+    const std::string text = m_redo.back();
+    m_redo.pop_back();
+    restoreText(text);
+}
+
+void MainWindow::restoreText(const std::string& text)
+{
+    m_doc.fromText(text);
+    m_restoring = true;
+    rebuild();
+    m_restoring = false;
+}
+
+bool MainWindow::maybeSave()
+{
+    if (!m_modified) return true;
+    const auto answer = QMessageBox::question(this, "FormWerk",
+        QString::fromUtf8("Änderungen an \"%1\" speichern?").arg(QString::fromStdString(m_doc.name())),
+        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Save);
+    if (answer == QMessageBox::Cancel) return false;
+    if (answer == QMessageBox::Save) return cmdSave();
+    return true;
+}
+
+void MainWindow::cmdNew()
+{
+    if (!maybeSave()) return;
+    m_doc.clear("Bauteil1");
+    m_filePath.clear();
+    m_slice = fw::SliceResult{};
+    resetHistory();
+    rebuild(true);
+    m_modified = false;
+    updateTitle();
+}
+
+void MainWindow::cmdOpen()
+{
+    if (!maybeSave()) return;
+    const QString path = QFileDialog::getOpenFileName(this, QString::fromUtf8("Bauteil öffnen"),
+        QSettings().value("letzterOrdner").toString(), "FormWerk-Bauteil (*.fwpart)");
+    if (!path.isEmpty()) openFile(path);
+}
+
+bool MainWindow::openFile(const QString& path)
+{
+    QFile f(path);
+    std::string err;
+    fw::PartDocument tmp;
+    if (!f.open(QIODevice::ReadOnly) || !tmp.fromText(f.readAll().toStdString(), &err)) {
+        QMessageBox::warning(this, QString::fromUtf8("Bauteil öffnen"),
+            QString::fromUtf8("Die Datei konnte nicht gelesen werden.\n%1").arg(QString::fromStdString(err)));
+        return false;
+    }
+    m_doc.fromText(tmp.toText());
+    m_filePath = path;
+    m_slice = fw::SliceResult{};
+    resetHistory();
+    rebuild(true);
+    m_modified = false;
+    updateTitle();
+    addRecent(path);
+    return true;
+}
+
+bool MainWindow::cmdSave()
+{
+    if (m_filePath.isEmpty()) return cmdSaveAs();
+    return writeFile(m_filePath);
+}
+
+bool MainWindow::cmdSaveAs()
+{
+    const QString start = m_filePath.isEmpty()
+        ? QSettings().value("letzterOrdner").toString() + "/" + QString::fromStdString(m_doc.name()) + ".fwpart"
+        : m_filePath;
+    QString path = QFileDialog::getSaveFileName(this, "Bauteil speichern unter", start, "FormWerk-Bauteil (*.fwpart)");
+    if (path.isEmpty()) return false;
+    if (!path.endsWith(".fwpart", Qt::CaseInsensitive)) path += ".fwpart";
+    m_doc.setName(QFileInfo(path).completeBaseName().toStdString());
+    if (!writeFile(path)) return false;
+    m_filePath = path;
+    m_lastText = m_doc.toText(); // Namensaenderung ist keine rueckgaengig machbare Aenderung
+    refreshBrowser();
+    updateTitle();
+    return true;
+}
+
+bool MainWindow::writeFile(const QString& path)
+{
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        QMessageBox::warning(this, "Speichern", "Die Datei konnte nicht geschrieben werden.");
+        return false;
+    }
+    f.write(QByteArray::fromStdString(m_doc.toText()));
+    m_modified = false;
+    updateTitle();
+    addRecent(path);
+    statusBar()->showMessage(QString("Gespeichert: %1").arg(path), 4000);
+    return true;
+}
+
+void MainWindow::addRecent(const QString& path)
+{
+    QSettings s;
+    QStringList list = s.value("zuletztGeoeffnet").toStringList();
+    list.removeAll(path);
+    list.prepend(path);
+    while (list.size() > 8) list.removeLast();
+    s.setValue("zuletztGeoeffnet", list);
+    s.setValue("letzterOrdner", QFileInfo(path).absolutePath());
+    updateRecentMenu();
+}
+
+void MainWindow::updateRecentMenu()
+{
+    m_recentMenu->clear();
+    const QStringList list = QSettings().value("zuletztGeoeffnet").toStringList();
+    for (const QString& path : list) {
+        m_recentMenu->addAction(QFileInfo(path).fileName(), this, [this, path] {
+            if (maybeSave()) openFile(path);
+        })->setToolTip(path);
+    }
+    m_recentMenu->setEnabled(!list.isEmpty());
+}
+
+void MainWindow::closeEvent(QCloseEvent* e)
+{
+    if (m_sliceWatcher->isRunning()) {
+        m_cancelSlice = true;
+        m_sliceWatcher->waitForFinished();
+    }
+    if (maybeSave()) e->accept();
+    else e->ignore();
 }
