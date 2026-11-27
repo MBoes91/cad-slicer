@@ -57,6 +57,10 @@
 #include <QActionGroup>
 #include <QStackedWidget>
 #include <QSettings>
+#include <QCheckBox>
+#include <QSpinBox>
+#include <BRepExtrema_DistShapeShape.hxx>
+#include <BRepBuilderAPI_MakeVertex.hxx>
 #include <QSlider>
 #include <QStatusBar>
 #include <QTabWidget>
@@ -73,7 +77,8 @@ namespace {
 
 // Einfache, selbst gezeichnete Symbole (keine fremden Grafiken).
 enum class Icon { Line, Arc, Dim, Finish, Cancel, Construction, Select, Pause, Sketch, Extrude, Revolve, Hole, Export, Home, Fit, Top, Front, Right, Slice, Save, Settings, Preview, Rect, Circle,
-                  Pan, Zoom, Orbit, PrevView, NewDoc, OpenDoc, Disk, Measure, Update, PrintEnv, Shaded, Edges, Wire, Persp, EndOfPart, Close };
+                  Pan, Zoom, Orbit, PrevView, NewDoc, OpenDoc, Disk, Measure, Update, PrintEnv, Shaded, Edges, Wire, Persp, EndOfPart, Close,
+                  Fillet, Chamfer, RectPattern, CircPattern, Mirror, Point };
 
 QIcon makeIcon(Icon kind)
 {
@@ -261,6 +266,49 @@ QIcon makeIcon(Icon kind)
         p.drawRoundedRect(QRect(8, 22, 48, 20), 4, 4);
         p.setBrush(Qt::white); p.drawRect(14, 29, 36, 6);
         break;
+    case Icon::Fillet: {
+        // Quader mit gerundeter Kante
+        p.setBrush(QColor(150, 185, 230));
+        QPainterPath path;
+        path.moveTo(8, 56); path.lineTo(8, 20); path.lineTo(36, 20);
+        path.arcTo(QRectF(20, 20, 32, 32), 90, -90);
+        path.lineTo(52, 56); path.closeSubpath();
+        p.drawPath(path);
+        p.setPen(QPen(orange, 4)); p.setBrush(Qt::NoBrush);
+        p.drawArc(QRectF(20, 20, 32, 32), 0, 90 * 16);
+        break;
+    }
+    case Icon::Chamfer:
+        p.setBrush(QColor(150, 185, 230));
+        p.drawPolygon(QPolygon({{8, 56}, {8, 20}, {36, 20}, {52, 36}, {52, 56}}));
+        p.setPen(QPen(orange, 4)); p.drawLine(36, 20, 52, 36);
+        break;
+    case Icon::RectPattern:
+        p.setBrush(QColor(150, 185, 230));
+        for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) p.drawRect(8 + i * 18, 8 + j * 18, 12, 12);
+        p.setBrush(QColor(orange)); p.drawRect(8, 44, 12, 12);
+        break;
+    case Icon::CircPattern:
+        p.setBrush(QColor(150, 185, 230));
+        for (int i = 0; i < 6; ++i) {
+            const double a = i * M_PI / 3;
+            if (i == 0) p.setBrush(QColor(orange)); else p.setBrush(QColor(150, 185, 230));
+            p.drawEllipse(QPointF(32 + 20 * std::cos(a), 32 - 20 * std::sin(a)), 6, 6);
+        }
+        p.setPen(QPen(dark, 2, Qt::DashLine)); p.setBrush(Qt::NoBrush); p.drawEllipse(QPointF(32, 32), 20, 20);
+        break;
+    case Icon::Mirror:
+        p.setBrush(QColor(150, 185, 230));
+        p.drawPolygon(QPolygon({{6, 50}, {26, 50}, {26, 14}}));
+        p.setBrush(QColor(190, 210, 238)); p.setPen(QPen(dark, 2, Qt::DashLine));
+        p.drawPolygon(QPolygon({{58, 50}, {38, 50}, {38, 14}}));
+        p.setPen(QPen(orange, 3, Qt::DashDotLine)); p.drawLine(32, 4, 32, 60);
+        break;
+    case Icon::Point:
+        p.setPen(QPen(blue, 3)); p.setBrush(Qt::NoBrush);
+        p.drawEllipse(QPointF(32, 32), 10, 10);
+        p.drawLine(12, 32, 52, 32); p.drawLine(32, 12, 32, 52);
+        break;
     case Icon::Close:
         p.setBrush(QColor(210, 60, 50)); p.setPen(Qt::NoPen); p.drawRoundedRect(QRect(6, 6, 52, 52), 8, 8);
         p.setPen(QPen(Qt::white, 6, Qt::SolidLine, Qt::RoundCap));
@@ -431,8 +479,17 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
     }
     m_profileLabel->setText(QString::fromStdString(m_profile.name));
 
-    if (qEnvironmentVariableIsSet("FORMWERK_DEMO")) loadDemoPart();
-    else showHome();
+    // Datei als Argument (z. B. Doppelklick auf eine .fwpart-Datei unter Windows)
+    const QStringList args = QCoreApplication::arguments();
+    if (args.size() > 1 && QFileInfo::exists(args.at(1))) {
+        showHome();
+        const QString path = args.at(1);
+        QTimer::singleShot(0, this, [this, path] { openFile(path); });
+    } else if (qEnvironmentVariableIsSet("FORMWERK_DEMO")) {
+        loadDemoPart();
+    } else {
+        showHome();
+    }
 }
 
 QWidget* MainWindow::buildHomePage()
@@ -630,6 +687,10 @@ void MainWindow::showViewContextMenu(const QPoint& pos)
     mm->setItem(MarkingMenu::SW, m_actPrev);
     mm->setItem(MarkingMenu::W, m_actFit);
     mm->setItem(MarkingMenu::NW, m_inPrintEnv ? m_actExitPrint : m_actPrintEnv);
+    mm->addOverflow(m_actHole);
+    mm->addOverflow(m_actFillet);
+    mm->addOverflow(m_actChamfer);
+    mm->addOverflowSeparator();
     mm->addOverflow(m_actParams);
     mm->addOverflow(m_actMeasure);
     mm->addOverflow(m_actUpdate);
@@ -744,13 +805,17 @@ void MainWindow::buildRibbon()
     auto* aSketch = act("2D-Skizze\nerstellen", Icon::Sketch, QKeySequence("S"), [this] { cmdNewSketch(); });
     auto* aExtrude = act("Extrusion", Icon::Extrude, QKeySequence("E"), [this] { cmdExtrude(); });
     auto* aRevolve = act("Drehung", Icon::Revolve, QKeySequence("R"), [this] { cmdRevolve(); });
-    auto* aHole = act("Bohrung", Icon::Hole, QKeySequence("H"), [this] {
-        QMessageBox::information(this, "Bohrung",
-            QString::fromUtf8("Das Bohrungs-Feature folgt in einem der nächsten Schritte.\n"
-                              "Bis dahin: Kreis in eine Skizze zeichnen und mit \"Differenz\" extrudieren."));
-    });
+    auto* aHole = act("Bohrung", Icon::Hole, QKeySequence("H"), [this] { cmdHole(); });
+    auto* aFillet = act("Rundung", Icon::Fillet, QKeySequence("F"), [this] { cmdEdgeFeature(true); });
+    auto* aChamfer = act("Fase", Icon::Chamfer, QKeySequence("Ctrl+Shift+K"), [this] { cmdEdgeFeature(false); });
+    auto* aRectPat = act("Rechteckig", Icon::RectPattern, QKeySequence("Ctrl+Shift+R"), [this] { cmdPattern(false); });
+    auto* aCircPat = act("Rund", Icon::CircPattern, QKeySequence("Ctrl+Shift+O"), [this] { cmdPattern(true); });
+    auto* aMirror = act("Spiegeln", Icon::Mirror, QKeySequence("Ctrl+Shift+M"), [this] { cmdMirror(); });
+    aRectPat->setToolTip("Rechteckige Anordnung (Ctrl+Shift+R)");
+    aCircPat->setToolTip("Runde Anordnung (Ctrl+Shift+O)");
+    m_actHole = aHole; m_actFillet = aFillet; m_actChamfer = aChamfer;
     auto* aPrintEnv = act("3D-Druck", Icon::PrintEnv, {}, [this] { enterPrintEnvironment(); });
-    for (QAction* a : {aSketch, aExtrude, aRevolve, aHole})
+    for (QAction* a : {aSketch, aExtrude, aRevolve, aHole, aFillet, aChamfer, aRectPat, aCircPat, aMirror})
         connect(a, &QAction::triggered, this, [this, a] { m_lastCommand = a; });
     aPrintEnv->setToolTip(QString::fromUtf8("3D-Druck-Umgebung: Druckeinstellungen, Modifikatoren, Slicen, G-Code"));
 
@@ -809,8 +874,9 @@ void MainWindow::buildRibbon()
     aBlock->setIcon(modifierIcon(QColor(210, 70, 60)));
 
     m_modelActions = {aZone, aEnforce, aBlock, aSketch, aExtrude, aRevolve, aHole, aSlice, m_previewAction, aSave,
-                      aSettings, aEvent, aPrintEnv, aMeasure, aUpdate, aExitPrint, aParams};
-    m_docActions = {aSketch, aExtrude, aRevolve, aHole, aPrintEnv, aMeasure, aUpdate, aHome, aFit, aPrev, aPan, aZoom, aOrbit,
+                      aSettings, aEvent, aPrintEnv, aMeasure, aUpdate, aExitPrint, aParams,
+                      aFillet, aChamfer, aRectPat, aCircPat, aMirror};
+    m_docActions = {aSketch, aExtrude, aRevolve, aHole, aFillet, aChamfer, aRectPat, aCircPat, aMirror, aPrintEnv, aMeasure, aUpdate, aHome, aFit, aPrev, aPan, aZoom, aOrbit,
                     aTop, aFront, aRight, aSlice, aSave, aEvent, aZone, aEnforce, aBlock, m_previewAction};
 
     // --- Skizze (kontextuelles Register, nur im Skizzenmodus sichtbar)
@@ -830,6 +896,8 @@ void MainWindow::buildRibbon()
     auto* sRect = tool("Rechteck", makeIcon(Icon::Rect), SketchCanvas::Tool::Rectangle, "R");
     auto* sCircle = tool("Kreis", makeIcon(Icon::Circle), SketchCanvas::Tool::Circle, "C");
     auto* sArc = tool("Bogen", makeIcon(Icon::Arc), SketchCanvas::Tool::Arc, "A");
+    auto* sPoint = tool("Punkt", makeIcon(Icon::Point), SketchCanvas::Tool::Point);
+    sPoint->setToolTip("Punkt: Mittelpunkt, z. B. für Bohrungen");
     auto* sDim = tool("Bemaßung", makeIcon(Icon::Dim), SketchCanvas::Tool::Dimension, "D");
     auto* cCoin = tool("Koinzident", textIcon(QString::fromUtf8("●")), SketchCanvas::Tool::Coincident);
     auto* cH = tool("Horizontal", textIcon("H"), SketchCanvas::Tool::Horizontal);
@@ -891,7 +959,7 @@ void MainWindow::buildRibbon()
     m_ribbon->setDocumentMode(true);
 
     // Kontextuelle Register stehen wie in Inventor ganz vorne
-    m_sketchPage = makeRibbonPage({makePanel("Erstellen", {sSelect, sLine, sRect, sCircle, sArc}),
+    m_sketchPage = makeRibbonPage({makePanel("Erstellen", {sSelect, sLine, sRect, sCircle, sArc, sPoint}),
                                    makePanel("Bemaßung", {sDim}),
                                    makePanel("Abhängig machen", {cCoin, cH, cV, cPar, cPerp, cTan, cEq, cFix, cMid}),
                                    makePanel("Format", {sConstr, sShow}),
@@ -912,7 +980,8 @@ void MainWindow::buildRibbon()
 
     m_modelTabPage = makeRibbonPage({makePanel("Skizze", {aSketch}),
                                      makePanel("Erstellen", {aExtrude, aRevolve}),
-                                     makePanel("Ändern", {aHole})});
+                                     makePanel("Ändern", {aHole, aFillet, aChamfer}),
+                                     makePanel("Muster", {aRectPat, aCircPat, aMirror})});
     m_ribbon->addTab(m_modelTabPage, "3D-Modell");
     m_ribbon->addTab(makeRibbonPage({makePanel("Messen", {aMeasure})}), QString::fromUtf8("Prüfen"));
     m_ribbon->addTab(makeRibbonPage({makePanel("Aktualisieren", {aUpdate}), makePanel("Parameter", {aParams})}), "Verwalten");
@@ -1113,6 +1182,7 @@ void MainWindow::buildBrowser()
     m_panelDock = new QDockWidget("Eigenschaften", this);
     m_panelDock->setObjectName("Eigenschaften");
     m_panelDock->setWidget(m_panel);
+    m_panel->setMinimumWidth(320); // feste Breite: das Grafikfenster springt nicht beim Wechsel der Palette
     m_panelDock->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable);
     addDockWidget(Qt::LeftDockWidgetArea, m_panelDock);
     splitDockWidget(m_panelDock, dock, Qt::Vertical);
@@ -1239,7 +1309,7 @@ void MainWindow::displayModel()
     for (const auto& s : sketches()) {
         const bool shown = s->visibility() == fw::Sketch::Visibility::Shown ||
                            (s->visibility() == fw::Sketch::Visibility::Auto && !m_doc.isUsed(s));
-        if (!shown || s->isEmpty() || m_doc.isAfterEndOfPart(s)) continue;
+        if (!shown || (s->isEmpty() && !s->hasCenterPoints()) || m_doc.isAfterEndOfPart(s)) continue;
         Handle(AIS_Shape) a = new AIS_Shape(s->wireframe());
         a->SetColor(Quantity_NOC_ORANGE);
         a->SetWidth(2.0);
@@ -1338,6 +1408,12 @@ void MainWindow::refreshBrowser()
         fw::SketchPtr used;
         if (auto e = std::dynamic_pointer_cast<fw::ExtrudeFeature>(f)) { icon = Icon::Extrude; used = e->sketch(); }
         else if (auto r = std::dynamic_pointer_cast<fw::RevolveFeature>(f)) { icon = Icon::Revolve; used = r->sketch(); }
+        else if (auto h = std::dynamic_pointer_cast<fw::HoleFeature>(f)) { icon = Icon::Hole; used = h->sketch(); }
+        else if (f->type() == fw::FeatureType::Fillet) icon = Icon::Fillet;
+        else if (f->type() == fw::FeatureType::Chamfer) icon = Icon::Chamfer;
+        else if (f->type() == fw::FeatureType::Mirror) icon = Icon::Mirror;
+        else if (auto pt = std::dynamic_pointer_cast<fw::PatternFeature>(f))
+            icon = pt->kind == fw::PatternFeature::Kind::Circular ? Icon::CircPattern : Icon::RectPattern;
         else if (auto s = std::dynamic_pointer_cast<fw::Sketch>(f)) {
             if (!m_doc.isUsed(s)) sketchItem(s, root);
             continue;
@@ -1596,12 +1672,461 @@ void MainWindow::cmdRevolve()
     beginFeatureEdit(f, true, backup);
 }
 
+// --- Bohrung, Rundung, Fase, Muster, Spiegeln ------------------------------------
+
+std::vector<fw::FeaturePtr> MainWindow::patternCandidates(const fw::FeaturePtr& f) const
+{
+    std::vector<fw::FeaturePtr> out;
+    const int end = m_doc.endOfPart();
+    int i = 0;
+    for (const auto& o : m_doc.features()) {
+        if (o == f || i++ >= end) break;
+        if (dynamic_cast<const fw::ToolFeature*>(o.get())) out.push_back(o);
+    }
+    return out;
+}
+
+void MainWindow::cmdHole()
+{
+    if (m_editFeature || m_pickingPlane) return;
+    if (m_doc.body().IsNull()) {
+        QMessageBox::information(this, "Bohrung", QString::fromUtf8("Bohrungen brauchen einen vorhandenen Körper."));
+        return;
+    }
+    // Wie Inventor: die letzte unverbrauchte Skizze mit Mittelpunkten (oder Kreisen) vorschlagen
+    fw::SketchPtr sketch;
+    auto sk = sketches();
+    for (auto it = sk.rbegin(); it != sk.rend() && !sketch; ++it)
+        if (!m_doc.isUsed(*it) && !fw::HoleFeature("", *it).centers().empty()) sketch = *it;
+    if (!sketch) {
+        QMessageBox::information(this, "Bohrung",
+            QString::fromUtf8("Bitte zuerst eine Skizze mit Mittelpunkten erstellen\n"
+                              "(Skizze ▸ Punkt, z. B. auf einer Fläche des Bauteils)."));
+        return;
+    }
+    const std::string backup = m_doc.toText();
+    auto h = std::make_shared<fw::HoleFeature>(m_doc.nextName("Bohrung"), sketch);
+    m_doc.addFeature(h);
+    beginFeatureEdit(h, true, backup);
+}
+
+void MainWindow::cmdEdgeFeature(bool fillet)
+{
+    if (m_editFeature || m_pickingPlane) return;
+    if (m_doc.body().IsNull()) {
+        QMessageBox::information(this, fillet ? "Rundung" : "Fase", QString::fromUtf8("Zuerst einen Körper erstellen."));
+        return;
+    }
+    const std::string backup = m_doc.toText();
+    fw::FeaturePtr f;
+    if (fillet) f = std::make_shared<fw::FilletFeature>(m_doc.nextName("Rundung"), 2.0);
+    else f = std::make_shared<fw::ChamferFeature>(m_doc.nextName("Fase"), 1.0);
+    m_doc.addFeature(f);
+    beginFeatureEdit(f, true, backup);
+}
+
+void MainWindow::cmdPattern(bool circular)
+{
+    if (m_editFeature || m_pickingPlane) return;
+    const auto cands = patternCandidates(nullptr);
+    if (cands.empty()) {
+        QMessageBox::information(this, "Muster", QString::fromUtf8("Es gibt noch kein Feature, das angeordnet werden kann."));
+        return;
+    }
+    const std::string backup = m_doc.toText();
+    auto p = std::make_shared<fw::PatternFeature>(
+        m_doc.nextName(circular ? "Runde Anordnung" : "Rechteckige Anordnung"),
+        circular ? fw::PatternFeature::Kind::Circular : fw::PatternFeature::Kind::Rectangular);
+    p->sources = {cands.back()};
+    m_doc.addFeature(p);
+    beginFeatureEdit(p, true, backup);
+}
+
+void MainWindow::cmdMirror()
+{
+    if (m_editFeature || m_pickingPlane) return;
+    if (m_doc.body().IsNull()) {
+        QMessageBox::information(this, "Spiegeln", QString::fromUtf8("Zuerst einen Körper erstellen."));
+        return;
+    }
+    const std::string backup = m_doc.toText();
+    auto mf = std::make_shared<fw::MirrorFeature>(m_doc.nextName("Spiegeln"));
+    const auto cands = patternCandidates(nullptr);
+    if (!cands.empty()) mf->sources = {cands.back()};
+    m_doc.addFeature(mf);
+    beginFeatureEdit(mf, true, backup);
+}
+
+namespace {
+// Querschnitt einer Bohrungsart fuer die Palette
+QIcon holeTypeIcon(int kind)
+{
+    QPixmap pm(48, 48);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setPen(QPen(QColor(50, 60, 75), 2));
+    p.setBrush(QColor(150, 185, 230));
+    QPolygonF hole;
+    if (kind == 0) hole = QPolygonF({{18, 6}, {30, 6}, {30, 36}, {24, 42}, {18, 36}});
+    else if (kind == 1) hole = QPolygonF({{12, 6}, {36, 6}, {36, 16}, {30, 16}, {30, 36}, {24, 42}, {18, 36}, {18, 16}, {12, 16}});
+    else hole = QPolygonF({{10, 6}, {38, 6}, {30, 16}, {30, 36}, {24, 42}, {18, 36}, {18, 16}});
+    p.drawRect(4, 6, 40, 38);
+    p.setBrush(Qt::white);
+    p.drawPolygon(hole);
+    return QIcon(pm);
+}
+
+ValueEdit* paramEdit(const fw::FeaturePtr& f, const std::string& key, double value, const QString& unit, ValueEdit::Evaluator ev)
+{
+    auto* e = new ValueEdit(unit, std::move(ev));
+    QString expr;
+    for (const auto& s : f->params()) if (s.key == key) expr = QString::fromStdString(s.ref->expr);
+    e->setExpression(expr, value);
+    return e;
+}
+
+void storeExpr(const fw::FeaturePtr& f, const std::string& key, const ValueEdit* e)
+{
+    for (const auto& s : f->params()) if (s.key == key) s.ref->expr = e->expression().toStdString();
+}
+
+QComboBox* axisCombo(fw::WorldAxis a)
+{
+    auto* c = new QComboBox;
+    c->addItems({"X-Achse", "Y-Achse", "Z-Achse"});
+    c->setCurrentIndex(static_cast<int>(a));
+    return c;
+}
+} // namespace
+
+bool MainWindow::buildModifyPanel(const fw::FeaturePtr& f)
+{
+    const QString name = QString::fromStdString(f->name());
+    auto sk = sketches();
+    auto featureList = [this](const fw::FeaturePtr& self, const std::vector<fw::FeaturePtr>& chosen) {
+        auto* list = new QListWidget;
+        list->setMaximumHeight(110);
+        for (const auto& c : patternCandidates(self)) {
+            auto* it = new QListWidgetItem(QString::fromStdString(c->name()), list);
+            it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsUserCheckable);
+            it->setCheckState(std::find(chosen.begin(), chosen.end(), c) != chosen.end() ? Qt::Checked : Qt::Unchecked);
+            it->setData(Qt::UserRole, QString::fromStdString(c->name()));
+        }
+        return list;
+    };
+    auto checkedFeatures = [this](QListWidget* list) {
+        std::vector<fw::FeaturePtr> out;
+        for (int i = 0; i < list->count(); ++i) {
+            if (list->item(i)->checkState() != Qt::Checked) continue;
+            const std::string n = list->item(i)->data(Qt::UserRole).toString().toStdString();
+            for (const auto& o : m_doc.features()) if (o->name() == n) out.push_back(o);
+        }
+        return out;
+    };
+
+    if (auto h = std::dynamic_pointer_cast<fw::HoleFeature>(f)) {
+        m_panel->begin(makeIcon(Icon::Hole), QString::fromUtf8("Bohrung  ›  %1").arg(name));
+        auto* place = m_panel->addSection("Platzierung");
+        auto* sketchBox = new QComboBox;
+        for (size_t i = 0; i < sk.size(); ++i) {
+            sketchBox->addItem(makeIcon(Icon::Sketch), QString::fromStdString(sk[i]->name()));
+            if (sk[i] == h->sketch()) sketchBox->setCurrentIndex(static_cast<int>(i));
+        }
+        place->addRow("Skizze", sketchBox);
+        auto* centers = new QLabel;
+        place->addRow("Mittelpunkte", centers);
+        auto* flip = new QCheckBox("Richtung umkehren");
+        flip->setChecked(h->flip);
+        place->addRow("", flip);
+
+        auto* type = m_panel->addSection("Typ");
+        auto* kindGroup = new QButtonGroup(m_panel);
+        type->addRow("Senkung", PropertyPanel::choiceRow(kindGroup,
+            {{holeTypeIcon(0), "Keine"}, {holeTypeIcon(1), "Senkung"}, {holeTypeIcon(2), "Kegelsenkung"}}, static_cast<int>(h->kind)));
+        auto* dia = paramEdit(f, "dia", h->diameter, "mm", evaluator());
+        type->addRow("Durchmesser", dia);
+        auto* cbd = paramEdit(f, "cbd", h->cbDiameter, "mm", evaluator());
+        auto* cbdepth = paramEdit(f, "cbdepth", h->cbDepth, "mm", evaluator());
+        auto* csd = paramEdit(f, "csd", h->csDiameter, "mm", evaluator());
+        auto* csangle = paramEdit(f, "csangle", h->csAngle, QString::fromUtf8("°"), evaluator());
+        type->addRow("Senkungs-Ø", cbd);
+        type->addRow("Senkungstiefe", cbdepth);
+        type->addRow("Kegelsenkungs-Ø", csd);
+        type->addRow("Kegelwinkel", csangle);
+
+        auto* beh = m_panel->addSection("Verhalten");
+        auto* endGroup = new QButtonGroup(m_panel);
+        beh->addRow("Abschluss", PropertyPanel::choiceRow(endGroup,
+            {{textIcon("|-|"), "Abstand"}, {textIcon(QString::fromUtf8("⇣")), "Durch alle"}}, h->throughAll ? 1 : 0));
+        auto* depth = paramEdit(f, "depth", h->depth, "mm", evaluator());
+        beh->addRow("Tiefe", depth);
+        auto* tipGroup = new QButtonGroup(m_panel);
+        beh->addRow("Bohrspitze", PropertyPanel::choiceRow(tipGroup,
+            {{textIcon("_"), "Flach"}, {textIcon("V"), QString::fromUtf8("118°")}}, h->tipAngle > 0 ? 1 : 0));
+
+        auto layoutRows = [=] {
+            const int k = kindGroup->checkedId();
+            type->setRowVisible(cbd, k == 1);
+            type->setRowVisible(cbdepth, k == 1);
+            type->setRowVisible(csd, k == 2);
+            type->setRowVisible(csangle, k == 2);
+            const bool through = endGroup->checkedId() == 1;
+            beh->setRowVisible(depth, !through);
+            for (auto* b : tipGroup->buttons()) b->setEnabled(!through);
+            centers->setText(QString::number(h->centers().size()));
+        };
+        auto apply = [this, h, f, sk, sketchBox, flip, kindGroup, dia, cbd, cbdepth, csd, csangle, endGroup, depth, tipGroup, layoutRows] {
+            const int si = sketchBox->currentIndex();
+            if (si >= 0 && si < static_cast<int>(sk.size())) h->setSketch(sk[static_cast<size_t>(si)]);
+            h->flip = flip->isChecked();
+            h->kind = static_cast<fw::HoleFeature::Kind>(kindGroup->checkedId());
+            h->throughAll = endGroup->checkedId() == 1;
+            h->diameter = dia->value();
+            h->cbDiameter = cbd->value();
+            h->cbDepth = cbdepth->value();
+            h->csDiameter = csd->value();
+            h->csAngle = csangle->value();
+            h->depth = depth->value();
+            h->tipAngle = tipGroup->checkedId() == 1 ? 118.0 : 0.0;
+            storeExpr(f, "dia", dia); storeExpr(f, "cbd", cbd); storeExpr(f, "cbdepth", cbdepth);
+            storeExpr(f, "csd", csd); storeExpr(f, "csangle", csangle); storeExpr(f, "depth", depth);
+            layoutRows();
+            schedulePreview();
+        };
+        connect(sketchBox, &QComboBox::currentIndexChanged, m_panel, apply);
+        connect(flip, &QCheckBox::toggled, m_panel, apply);
+        for (auto* g : {kindGroup, endGroup, tipGroup}) connect(g, &QButtonGroup::idClicked, m_panel, apply);
+        for (auto* e : {dia, cbd, cbdepth, csd, csangle, depth}) connect(e, &ValueEdit::valueEdited, m_panel, apply);
+        layoutRows();
+        m_editDistance = dia; // erhaelt den Fokus
+        return true;
+    }
+
+    if (auto e = std::dynamic_pointer_cast<fw::EdgeFeature>(f)) {
+        const bool fillet = f->type() == fw::FeatureType::Fillet;
+        m_panel->begin(makeIcon(fillet ? Icon::Fillet : Icon::Chamfer),
+                       QString::fromUtf8("%1  ›  %2").arg(fillet ? "Rundung" : "Fase", name));
+        auto* sec = m_panel->addSection("Kanten");
+        m_edgeCount = new QLabel;
+        sec->addRow("Gewählt", m_edgeCount);
+        auto* clear = new QPushButton("Auswahl aufheben");
+        sec->addRow("", clear);
+        auto* size = paramEdit(f, "size", e->size, "mm", evaluator());
+        sec->addRow(fillet ? "Radius" : "Abstand", size);
+        connect(clear, &QPushButton::clicked, m_panel, [this, e] { e->edges.clear(); previewFeature(); });
+        connect(size, &ValueEdit::valueEdited, m_panel, [this, e, f, size] {
+            e->size = size->value();
+            storeExpr(f, "size", size);
+            schedulePreview();
+        });
+        m_editDistance = nullptr;
+        return true;
+    }
+
+    if (auto p = std::dynamic_pointer_cast<fw::PatternFeature>(f)) {
+        const bool circ = p->kind == fw::PatternFeature::Kind::Circular;
+        m_panel->begin(makeIcon(circ ? Icon::CircPattern : Icon::RectPattern),
+                       QString::fromUtf8("Muster  ›  %1").arg(name));
+        auto* src = m_panel->addSection("Features");
+        auto* list = featureList(f, p->sources);
+        src->addRow(list);
+        std::function<void()> apply;
+        if (circ) {
+            auto* sec = m_panel->addSection("Platzierung");
+            auto* axis = axisCombo(p->axis);
+            sec->addRow("Drehachse", axis);
+            auto* count = new QSpinBox;
+            count->setRange(2, 360);
+            count->setValue(p->count);
+            sec->addRow("Anzahl", count);
+            auto* angle = paramEdit(f, "angle", p->angle, QString::fromUtf8("°"), evaluator());
+            sec->addRow("Winkel", angle);
+            apply = [this, p, f, list, axis, count, angle, checkedFeatures] {
+                p->sources = checkedFeatures(list);
+                p->axis = static_cast<fw::WorldAxis>(axis->currentIndex());
+                p->count = count->value();
+                p->angle = angle->value();
+                storeExpr(f, "angle", angle);
+                schedulePreview();
+            };
+            connect(axis, &QComboBox::currentIndexChanged, m_panel, apply);
+            connect(count, &QSpinBox::valueChanged, m_panel, apply);
+            connect(angle, &ValueEdit::valueEdited, m_panel, apply);
+        } else {
+            auto direction = [&](const QString& title, fw::WorldAxis a, bool flipped, int n, const std::string& key, double s) {
+                auto* sec = m_panel->addSection(title);
+                auto* axis = axisCombo(a);
+                auto* flip = new QCheckBox("Umkehren");
+                flip->setChecked(flipped);
+                auto* row = new QWidget;
+                auto* hl = new QHBoxLayout(row);
+                hl->setContentsMargins(0, 0, 0, 0);
+                hl->addWidget(axis, 1);
+                hl->addWidget(flip);
+                sec->addRow("Richtung", row);
+                auto* count = new QSpinBox;
+                count->setRange(1, 500);
+                count->setValue(n);
+                sec->addRow("Anzahl", count);
+                auto* spacing = paramEdit(f, key, s, "mm", evaluator());
+                sec->addRow("Abstand", spacing);
+                return std::make_tuple(sec, axis, flip, count, spacing);
+            };
+            auto [sec1, axis1, flip1, count1, sp1] = direction("Richtung 1", p->dir1, p->flip1, p->count1, "s1", p->spacing1);
+            auto* use2 = new QCheckBox("Richtung 2 verwenden");
+            use2->setChecked(p->useDir2);
+            sec1->addRow("", use2);
+            auto [sec2, axis2, flip2, count2, sp2] = direction("Richtung 2", p->dir2, p->flip2, p->count2, "s2", p->spacing2);
+            for (QWidget* w : {static_cast<QWidget*>(axis2), static_cast<QWidget*>(flip2), static_cast<QWidget*>(count2), static_cast<QWidget*>(sp2)})
+                w->setEnabled(p->useDir2);
+            apply = [this, p, f, list, axis1 = axis1, flip1 = flip1, count1 = count1, sp1 = sp1, use2,
+                     axis2 = axis2, flip2 = flip2, count2 = count2, sp2 = sp2, checkedFeatures] {
+                p->sources = checkedFeatures(list);
+                p->dir1 = static_cast<fw::WorldAxis>(axis1->currentIndex());
+                p->flip1 = flip1->isChecked();
+                p->count1 = count1->value();
+                p->spacing1 = sp1->value();
+                p->useDir2 = use2->isChecked();
+                p->dir2 = static_cast<fw::WorldAxis>(axis2->currentIndex());
+                p->flip2 = flip2->isChecked();
+                p->count2 = count2->value();
+                p->spacing2 = sp2->value();
+                for (QWidget* w : {static_cast<QWidget*>(axis2), static_cast<QWidget*>(flip2), static_cast<QWidget*>(count2), static_cast<QWidget*>(sp2)})
+                    w->setEnabled(p->useDir2);
+                storeExpr(f, "s1", sp1);
+                storeExpr(f, "s2", sp2);
+                schedulePreview();
+            };
+            for (auto* c : {axis1, axis2}) connect(c, &QComboBox::currentIndexChanged, m_panel, apply);
+            for (auto* c : {flip1, flip2, use2}) connect(c, &QCheckBox::toggled, m_panel, apply);
+            for (auto* c : {count1, count2}) connect(c, &QSpinBox::valueChanged, m_panel, apply);
+            for (auto* c : {sp1, sp2}) connect(c, &ValueEdit::valueEdited, m_panel, apply);
+        }
+        connect(list, &QListWidget::itemChanged, m_panel, apply);
+        return true;
+    }
+
+    if (auto mf = std::dynamic_pointer_cast<fw::MirrorFeature>(f)) {
+        m_panel->begin(makeIcon(Icon::Mirror), QString::fromUtf8("Spiegeln  ›  %1").arg(name));
+        auto* src = m_panel->addSection("Eingabe");
+        auto* modeGroup = new QButtonGroup(m_panel);
+        src->addRow("Spiegeln", PropertyPanel::choiceRow(modeGroup,
+            {{makeIcon(Icon::Extrude), "Features"}, {makeIcon(Icon::Mirror), QString::fromUtf8("Volumenkörper")}},
+            mf->sources.empty() ? 1 : 0));
+        auto* list = featureList(f, mf->sources);
+        list->setEnabled(!mf->sources.empty());
+        src->addRow(list);
+        auto* plane = new QComboBox;
+        plane->addItems({"XY-Ebene", "XZ-Ebene", "YZ-Ebene"});
+        plane->setCurrentIndex(mf->plane);
+        src->addRow("Spiegelebene", plane);
+        auto apply = [this, mf, list, modeGroup, plane, checkedFeatures] {
+            const bool body = modeGroup->checkedId() == 1;
+            list->setEnabled(!body);
+            mf->plane = plane->currentIndex();
+            if (body) {
+                mf->sources.clear();
+            } else {
+                auto chosen = checkedFeatures(list);
+                if (chosen.empty()) {
+                    m_panel->setMessage(QString::fromUtf8("Mindestens ein Feature anhaken."), true);
+                    return;
+                }
+                mf->sources = chosen;
+            }
+            schedulePreview();
+        };
+        connect(modeGroup, &QButtonGroup::idClicked, m_panel, apply);
+        connect(list, &QListWidget::itemChanged, m_panel, apply);
+        connect(plane, &QComboBox::currentIndexChanged, m_panel, apply);
+        return true;
+    }
+    return false;
+}
+
+void MainWindow::clearEdgeSelection()
+{
+    const auto& ctx = m_view->context();
+    if (!ctx.IsNull()) {
+        if (!m_edgeBaseAis.IsNull()) ctx->Remove(m_edgeBaseAis, false);
+        if (!m_edgeSelAis.IsNull()) ctx->Remove(m_edgeSelAis, false);
+    }
+    m_edgeBaseAis.Nullify();
+    m_edgeSelAis.Nullify();
+    m_edgeCount = nullptr;
+}
+
+void MainWindow::showEdgeSelection()
+{
+    auto e = std::dynamic_pointer_cast<fw::EdgeFeature>(m_editFeature);
+    const auto& ctx = m_view->context();
+    if (!e || ctx.IsNull()) return;
+    QLabel* count = m_edgeCount;
+    clearEdgeSelection();
+    m_edgeCount = count;
+
+    // Kanten des Koerpers vor der Rundung waehlbar machen; der Vorschaukoerper selbst nicht
+    const TopoDS_Shape base = m_doc.bodyBefore(m_editFeature);
+    if (base.IsNull()) return;
+    if (!m_bodyAis.IsNull()) ctx->Deactivate(m_bodyAis);
+    m_edgeBaseAis = new AIS_Shape(base);
+    m_edgeBaseAis->SetColor(Quantity_NOC_GRAY30);
+    m_edgeBaseAis->SetWidth(1.5);
+    ctx->Display(m_edgeBaseAis, AIS_WireFrame, AIS_Shape::SelectionMode(TopAbs_EDGE), false);
+    // Flaechen ebenfalls waehlbar: sie verdecken Kanten auf der Rueckseite (Klick auf eine Flaeche waehlt nichts)
+    ctx->Activate(m_edgeBaseAis, AIS_Shape::SelectionMode(TopAbs_FACE));
+
+    // Gewaehlte Kanten hervorheben
+    TopTools_IndexedMapOfShape map;
+    TopExp::MapShapes(base, TopAbs_EDGE, map);
+    TopoDS_Compound comp;
+    BRep_Builder bb;
+    bb.MakeCompound(comp);
+    int found = 0;
+    for (const gp_Pnt& p : e->edges) {
+        const TopoDS_Shape v = BRepBuilderAPI_MakeVertex(p).Shape();
+        for (int i = 1; i <= map.Extent(); ++i) {
+            BRepExtrema_DistShapeShape d(v, map(i));
+            if (d.IsDone() && d.Value() < 0.5) { bb.Add(comp, map(i)); ++found; break; }
+        }
+    }
+    if (found) {
+        m_edgeSelAis = new AIS_Shape(comp);
+        m_edgeSelAis->SetColor(Quantity_Color(0.10, 0.45, 0.95, Quantity_TOC_sRGB));
+        m_edgeSelAis->SetWidth(4.0);
+        m_edgeSelAis->SetZLayer(Graphic3d_ZLayerId_Topmost);
+        ctx->Display(m_edgeSelAis, AIS_WireFrame, -1, false);
+    }
+    if (m_edgeCount) m_edgeCount->setText(QString::fromUtf8("%1 Kante(n)").arg(e->edges.size()));
+}
+
+bool MainWindow::pickEdge(const Handle(AIS_InteractiveObject)& picked)
+{
+    auto e = std::dynamic_pointer_cast<fw::EdgeFeature>(m_editFeature);
+    const auto& ctx = m_view->context();
+    if (!e || m_edgeBaseAis.IsNull() || picked != m_edgeBaseAis || !ctx->HasDetectedShape()) return false;
+    const TopoDS_Shape s = ctx->DetectedShape();
+    if (s.ShapeType() != TopAbs_EDGE) return false;
+    const TopoDS_Edge edge = TopoDS::Edge(s);
+    // Bereits gewaehlt? Dann wieder entfernen
+    for (auto it = e->edges.begin(); it != e->edges.end(); ++it) {
+        BRepExtrema_DistShapeShape d(BRepBuilderAPI_MakeVertex(*it).Shape(), edge);
+        if (d.IsDone() && d.Value() < 0.5) {
+            e->edges.erase(it);
+            return true; // Vorschau folgt beim Loslassen
+        }
+    }
+    e->edges.push_back(fw::edgeMidpoint(edge));
+    return true;
+}
+
 void MainWindow::cmdEditFeature(const fw::FeaturePtr& f)
 {
     if (m_editFeature) return;
     if (auto s = std::dynamic_pointer_cast<fw::Sketch>(f)) {
         enterSketch(s, false);
-    } else if (f->type() == fw::FeatureType::Extrude || f->type() == fw::FeatureType::Revolve) {
+    } else {
         beginFeatureEdit(f, false, m_doc.toText());
     }
 }
@@ -1743,10 +2268,13 @@ void MainWindow::beginFeatureEdit(const fw::FeaturePtr& f, bool isNew, const std
         connect(extentGroup, &QButtonGroup::idClicked, m_panel, apply);
         connect(angle, &ValueEdit::valueEdited, m_panel, apply);
         connect(opGroup, &QButtonGroup::idClicked, m_panel, apply);
+    } else {
+        buildModifyPanel(f);
     }
     m_panel->finish();
     m_panelDock->show();
     m_panelDock->raise();
+    resizeDocks({m_panelDock}, {m_panel->sizeHint().height()}, Qt::Vertical);
     m_panelCancel->setEnabled(true);
     m_panelOk->setEnabled(true);
     if (m_editDistance) {
@@ -1757,6 +2285,7 @@ void MainWindow::beginFeatureEdit(const fw::FeaturePtr& f, bool isNew, const std
     // Ziehpfeil fuer den Extrusionsabstand
     m_view->setDragHandler({
         [this](const Handle(AIS_InteractiveObject)& o) {
+            if (std::dynamic_pointer_cast<fw::EdgeFeature>(m_editFeature)) return pickEdge(o);
             if (m_arrowAis.IsNull() || o != m_arrowAis || !m_editDistance) return false;
             auto e = std::dynamic_pointer_cast<fw::ExtrudeFeature>(m_editFeature);
             m_dragStartValue = e ? e->distance() : 0.0;
@@ -1778,14 +2307,20 @@ void MainWindow::previewFeature()
     if (!m_editFeature) return;
     const bool ok = m_doc.recompute();
     if (!m_view->context().IsNull()) displayModel();
-    if (!ok) {
+    auto edgeFeature = std::dynamic_pointer_cast<fw::EdgeFeature>(m_editFeature);
+    if (!ok && !(edgeFeature && edgeFeature->edges.empty() && m_doc.errorFeature() == m_editFeature)) {
         m_panel->setMessage(QString::fromUtf8("Fehler: %1").arg(QString::fromStdString(m_doc.errorMessage())), true);
-    } else if (m_editDistance) {
+    } else if (std::dynamic_pointer_cast<fw::ExtrudeFeature>(m_editFeature)) {
         m_panel->setMessage(QString::fromUtf8("Tipp: Pfeil im Grafikfenster ziehen, um den Abstand zu ändern."), false);
+    } else if (std::dynamic_pointer_cast<fw::EdgeFeature>(m_editFeature)) {
+        m_panel->setMessage(QString::fromUtf8("Kanten im Grafikfenster anklicken, erneuter Klick entfernt sie."), false);
     } else {
         m_panel->setMessage({}, false);
     }
     updateArrow();
+    if (std::dynamic_pointer_cast<fw::EdgeFeature>(m_editFeature)) showEdgeSelection();
+    if (m_panelDock->height() < m_panel->sizeHint().height())
+        resizeDocks({m_panelDock}, {m_panel->sizeHint().height()}, Qt::Vertical);
     m_view->redraw();
 }
 
@@ -1866,6 +2401,7 @@ void MainWindow::endFeatureEdit(bool accept)
         }
     }
     m_view->clearDragHandler();
+    clearEdgeSelection();
     if (!m_arrowAis.IsNull() && !m_view->context().IsNull()) m_view->context()->Remove(m_arrowAis, false);
     m_arrowAis.Nullify();
     m_editFeature.reset();
@@ -1885,7 +2421,8 @@ void MainWindow::cmdDeleteFeature(const fw::FeaturePtr& f)
 {
     if (!m_doc.removeFeature(f)) {
         QMessageBox::warning(this, QString::fromUtf8("Löschen"),
-            QString::fromUtf8("Die Skizze wird noch von einem Feature verwendet. Bitte zuerst das Feature löschen."));
+            QString::fromUtf8("%1 wird noch von einem anderen Feature verwendet (Skizze, Muster oder Spiegeln). "
+                              "Bitte zuerst dieses Feature löschen.").arg(QString::fromStdString(f->name())));
         return;
     }
     rebuild();

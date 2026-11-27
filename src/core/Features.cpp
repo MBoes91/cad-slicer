@@ -51,6 +51,11 @@ ExtrudeFeature::ExtrudeFeature(std::string name, SketchPtr sketch, double distan
 
 TopoDS_Shape ExtrudeFeature::apply(const TopoDS_Shape& body) const
 {
+    return combine(body, tool(body), m_op);
+}
+
+TopoDS_Shape ExtrudeFeature::tool(const TopoDS_Shape&) const
+{
     if (!m_sketch) throw std::runtime_error("Extrusion ohne Skizze");
     if (std::abs(m_distance) < 1e-6) throw std::runtime_error("Extrusionsabstand ist 0");
 
@@ -61,8 +66,7 @@ TopoDS_Shape ExtrudeFeature::apply(const TopoDS_Shape& body) const
         t.SetTranslation(gp_Vec(n) * (-m_distance / 2.0));
         profile = BRepBuilderAPI_Transform(profile, t, true).Shape();
     }
-    TopoDS_Shape prism = BRepPrimAPI_MakePrism(profile, gp_Vec(n) * m_distance).Shape();
-    return combine(body, prism, m_op);
+    return BRepPrimAPI_MakePrism(profile, gp_Vec(n) * m_distance).Shape();
 }
 
 RevolveFeature::RevolveFeature(std::string name, SketchPtr sketch, RevolveAxis axis,
@@ -74,13 +78,17 @@ RevolveFeature::RevolveFeature(std::string name, SketchPtr sketch, RevolveAxis a
 
 TopoDS_Shape RevolveFeature::apply(const TopoDS_Shape& body) const
 {
+    return combine(body, tool(body), m_op);
+}
+
+TopoDS_Shape RevolveFeature::tool(const TopoDS_Shape&) const
+{
     if (!m_sketch) throw std::runtime_error("Drehung ohne Skizze");
     if (m_angle <= 0 || m_angle > 360) throw std::runtime_error("Drehwinkel muss zwischen 0 und 360 Grad liegen");
 
     const gp_Ax3 ax = m_sketch->plane();
     const gp_Ax1 axis(ax.Location(), m_axis == RevolveAxis::SketchX ? ax.XDirection() : ax.YDirection());
-    TopoDS_Shape revol = BRepPrimAPI_MakeRevol(m_sketch->profile(), axis, m_angle * M_PI / 180.0).Shape();
-    return combine(body, revol, m_op);
+    return BRepPrimAPI_MakeRevol(m_sketch->profile(), axis, m_angle * M_PI / 180.0).Shape();
 }
 
 } // namespace fw

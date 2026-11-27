@@ -601,6 +601,13 @@ void SketchCanvas::paintEvent(QPaintEvent*)
         p.setPen(Qt::NoPen);
         p.setBrush(col);
         p.drawRect(QRectF(s.x() - r, s.y() - r, 2 * r, 2 * r));
+        if (P[i].center) { // Mittelpunkt: Kreuz wie bei Bohrungsmitten
+            p.setPen(QPen(col, 1.5));
+            p.drawLine(QPointF(s.x() - 8, s.y()), QPointF(s.x() + 8, s.y()));
+            p.drawLine(QPointF(s.x(), s.y() - 8), QPointF(s.x(), s.y() + 8));
+            p.setBrush(Qt::NoBrush);
+            p.drawEllipse(s, 5.0, 5.0);
+        }
     }
 
     // Abhaengigkeits-Symbole
@@ -845,6 +852,12 @@ void SketchCanvas::mousePressEvent(QMouseEvent* e)
         }
         if (endPoint != m_pending[1]) m_geo.addArc(m_pending[0], m_pending[1], endPoint);
         m_pending.clear();
+        resolve();
+        break;
+    }
+    case Tool::Point: {
+        const int p = pickOrCreatePoint(pos);
+        if (p > 0) m_geo.points[static_cast<size_t>(p)].center = true;
         resolve();
         break;
     }
@@ -1217,6 +1230,7 @@ void SketchCanvas::deleteSelection()
         break;
     case Hit::Point: {
         if (m_selected.index == 0) return;
+        m_geo.points[static_cast<size_t>(m_selected.index)].center = false;
         for (int i = static_cast<int>(m_geo.entities.size()) - 1; i >= 0; --i) {
             const auto& en = m_geo.entities[static_cast<size_t>(i)];
             if (en.p0 == m_selected.index || en.p1 == m_selected.index || en.p2 == m_selected.index) m_geo.removeEntity(i);
@@ -1253,6 +1267,7 @@ void SketchCanvas::updateStatus()
     case Tool::Rectangle: hint = m_pending.empty() ? "Rechteck: erste Ecke klicken" : "Rechteck: gegenüberliegende Ecke klicken"; break;
     case Tool::Circle: hint = m_pending.empty() ? "Kreis: Mittelpunkt klicken" : "Kreis: Radius festlegen"; break;
     case Tool::Arc: hint = m_pending.empty() ? "Bogen: Mittelpunkt klicken" : (m_pending.size() == 1 ? "Bogen: Startpunkt klicken" : "Bogen: Endpunkt klicken (gegen den Uhrzeigersinn)"); break;
+    case Tool::Point: hint = QString::fromUtf8("Punkt: Bohrungsmitte klicken (Esc beendet)"); break;
     case Tool::Dimension: hint = m_picked.empty() ? "Bemaßung: Linie, Kreis/Bogen oder Punkt wählen" : "Bemaßung: zweites Objekt wählen oder Maß platzieren"; break;
     default:
         hint = QString::fromUtf8("%1: Objekte nacheinander wählen").arg(QString::fromUtf8(constraintName(

@@ -10,6 +10,7 @@ namespace fw {
 
 struct SkPoint {
     double x = 0, y = 0;
+    bool center = false; // Mittelpunkt (Skizzenpunkt fuer Bohrungen), bleibt auch ohne Geometrie erhalten
 };
 
 enum class SkType { Line, Circle, Arc };

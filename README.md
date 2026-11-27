@@ -7,6 +7,7 @@ Technik: C++17, Qt 6 (Oberfläche), OpenCascade (CAD-Kernel), Clipper (2D-Polygo
 
 ![Modell](docs/modell.png)
 ![Skizze](docs/skizze.png)
+![Muster und Bohrung](docs/muster-bohrung.png)
 ![Druckvorschau](docs/druckvorschau.png)
 
 ## Stand (Version 0.1)
@@ -25,6 +26,10 @@ Technik: C++17, Qt 6 (Oberfläche), OpenCascade (CAD-Kernel), Clipper (2D-Polygo
 - **Bemaßungen**: Länge, Abstand (horizontal/vertikal/ausgerichtet), Durchmesser, Radius, Winkel; Doppelklick ändert den Wert,
   getriebene Bemaßungen bei Überbestimmung, Anzeige der offenen Freiheitsgrade („Vollständig bestimmt")
 - Extrusion (Verbinden, Differenz, Schnittmenge, symmetrisch), Drehung um eine Skizzenachse
+- Bohrung an Skizzenpunkten (neues Skizzenwerkzeug *Punkt*, sonst Kreismitten): einfach, Senkung, Kegelsenkung, Tiefe oder durch alle, Bohrspitze 118°
+- Rundung und Fase: Kanten im 3D-Fenster anklicken (erneuter Klick entfernt sie), Radius/Abstand mit Live-Vorschau
+- Rechteckige und runde Anordnung von Extrusionen, Drehungen und Bohrungen; Spiegeln von Features oder des ganzen Körpers an XY/XZ/YZ
+- Datei als Programmargument öffnen (z. B. Doppelklick auf `.fwpart` unter Windows)
 - Parametrische Neuberechnung: Maß ändern, Modell baut sich neu auf
 - Dynamische Eingabe beim Skizzieren: Werte (X/Y, Länge/Winkel, Breite/Höhe, Durchmesser) direkt am Mauszeiger tippen, Tab wechselt das Feld, Enter setzt den Punkt und legt die Bemaßung an (auch mit Gleichungen wie "d0 / 2")
 - Parameter (fx): jede Bemaßung und jeder Feature-Wert ist ein Parameter (d0, d1 …), Gleichungen wie "d0 * 2" oder "Breite / 2" in der Parametertabelle, in Bemaßungen und in der Eigenschaften-Palette, Benutzerparameter, Bemaßungen mit Gleichung zeigen "fx:"
@@ -50,16 +55,15 @@ Technik: C++17, Qt 6 (Oberfläche), OpenCascade (CAD-Kernel), Clipper (2D-Polygo
 - Farbige Schichtvorschau auf dem Druckbett, Druckzeit- und Filamentschätzung
 - G-Code mit `;LAYER:` / `;TYPE:`-Kommentaren (kompatibel mit gängigen G-Code-Viewern)
 
-**Tastenkürzel:** Strg+N/O/S Datei · Strg+Z/Y Rückgängig/Wiederholen · S Skizze (darin: L Linie, R Rechteck, C Kreis, A Bogen, D Bemaßung, Esc Auswählen) · E Extrusion · R Drehung · F2/F3/F4 halten + linke Maustaste: Pan/Zoom/Orbit · F5 vorherige Ansicht · F6 Ausgangsansicht · Pos1 Alles zoomen · Strg+R Slicen · Strg+G G-Code speichern
+**Tastenkürzel:** Strg+N/O/S Datei · Strg+Z/Y Rückgängig/Wiederholen · S Skizze (darin: L Linie, R Rechteck, C Kreis, A Bogen, D Bemaßung, Esc Auswählen) · E Extrusion · R Drehung · H Bohrung · F Rundung · Strg+Umschalt+K Fase · Strg+Umschalt+R/O rechteckige/runde Anordnung · Strg+Umschalt+M Spiegeln · F2/F3/F4 halten + linke Maustaste: Pan/Zoom/Orbit · F5 vorherige Ansicht · F6 Ausgangsansicht · Pos1 Alles zoomen · Strg+R Slicen · Strg+G G-Code speichern
 
 **Maus:** Rad = Zoom · Mittlere Taste = Verschieben · Umschalt+Mitte = Orbit · Doppelklick Mitte = Alles zoomen · Rechtsklick = Kontextmenü
 
 ## Nächste Schritte
 
-1. Skizzen auf Bauteilflächen, Bohrung, Fase/Rundung, Muster, Spiegeln
-2. Parameter-Tabelle mit Formeln
-3. STEP-Import/-Export, STL-Import
-4. Slicer: Baumstützen, Brücken-Erkennung, Combing
+1. Arbeitsebenen und -achsen, Muster entlang beliebiger Kanten
+2. STEP-Import/-Export, STL-Import
+3. Slicer: Baumstützen, Brücken-Erkennung, Combing
 
 ## Programm unter Windows 10 holen
 

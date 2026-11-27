@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/Features.h"
+#include "core/ModifyFeatures.h"
 #include "core/PrintModifier.h"
 
 #include <string>
@@ -33,10 +34,12 @@ public:
     const std::vector<PrintModifier>& modifiers() const { return m_modifiers; }
 
     void addFeature(FeaturePtr f);
-    // Entfernt ein Feature. Skizzen, die noch von Features benutzt werden,
-    // werden nicht entfernt (Rueckgabe false).
+    // Entfernt ein Feature. Features, die noch von anderen benutzt werden
+    // (Skizzen, Muster-Quellen), werden nicht entfernt (Rueckgabe false).
     bool removeFeature(const FeaturePtr& f);
     bool isUsed(const SketchPtr& s) const;
+    // true, wenn ein anderes Feature dieses benutzt (Skizze, Muster-Quelle ...)
+    bool isUsed(const Feature* f) const;
 
     // Bauteilende: Anzahl der wirksamen Features (alles danach wird nicht berechnet).
     // Neue Features werden am Bauteilende eingefuegt.
@@ -65,6 +68,8 @@ public:
     // Berechnet den Koerper neu. Gibt false zurueck, wenn ein Feature
     // fehlschlaegt; errorFeature/errorMessage nennen dann die Ursache.
     bool recompute();
+    // Koerper unmittelbar vor einem Feature (z. B. fuer die Kantenauswahl einer Rundung)
+    TopoDS_Shape bodyBefore(const FeaturePtr& f) const;
 
     const TopoDS_Shape& body() const { return m_body; }
     const FeaturePtr& errorFeature() const { return m_errorFeature; }

@@ -479,6 +479,7 @@ void SketchGeometry::purgeUnusedPoints()
 {
     std::vector<int> used(points.size(), 0);
     used[0] = 1;
+    for (size_t i = 0; i < points.size(); ++i) if (points[i].center) used[i] = 1;
     for (const auto& e : entities) {
         for (int p : {e.p0, e.p1, e.p2}) if (p >= 0) used[static_cast<size_t>(p)] = 1;
     }

@@ -16,7 +16,7 @@ class SketchCanvas : public QWidget {
     Q_OBJECT
 public:
     enum class Tool {
-        Select, Line, Rectangle, Circle, Arc, Dimension,
+        Select, Line, Rectangle, Circle, Arc, Point, Dimension,
         Coincident, Horizontal, Vertical, Parallel, Perpendicular, Tangent, Equal, Fix, Midpoint
     };
 

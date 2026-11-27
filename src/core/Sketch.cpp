@@ -100,6 +100,11 @@ int Sketch::addCircle(double cx, double cy, double r)
     return g.addConstraint(d);
 }
 
+bool Sketch::hasCenterPoints() const
+{
+    return std::any_of(m_geo.points.begin(), m_geo.points.end(), [](const SkPoint& p) { return p.center; });
+}
+
 bool Sketch::isEmpty() const
 {
     return std::none_of(m_geo.entities.begin(), m_geo.entities.end(),
@@ -264,6 +269,17 @@ TopoDS_Shape Sketch::wireframe() const
     for (const auto& e : m_geo.entities) {
         if (e.construction) continue;
         try { b.Add(comp, makeEdge(ax, m_geo, e)); } catch (...) {}
+    }
+    // Mittelpunkte als kleines Kreuz
+    for (size_t i = 1; i < m_geo.points.size(); ++i) {
+        if (!m_geo.points[i].center) continue;
+        const auto& p = m_geo.points[i];
+        auto at = [&](double dx, double dy) {
+            return ax.Location().Translated(gp_Vec(ax.XDirection()) * (p.x + dx) + gp_Vec(ax.YDirection()) * (p.y + dy));
+        };
+        const double s = 1.5;
+        b.Add(comp, BRepBuilderAPI_MakeEdge(at(-s, 0), at(s, 0)).Edge());
+        b.Add(comp, BRepBuilderAPI_MakeEdge(at(0, -s), at(0, s)).Edge());
     }
     return comp;
 }

@@ -49,7 +49,7 @@ bool PartDocument::isAfterEndOfPart(const FeaturePtr& f) const
 
 bool PartDocument::rename(const FeaturePtr& f, const std::string& name)
 {
-    if (name.empty() || name.find_first_of(";=\n\r") != std::string::npos) return false;
+    if (name.empty() || name.find_first_of(";=/,\n\r") != std::string::npos) return false;
     for (const auto& o : m_features)
         if (o != f && o->name() == name) return false;
     f->setName(name);
@@ -58,16 +58,18 @@ bool PartDocument::rename(const FeaturePtr& f, const std::string& name)
 
 bool PartDocument::isUsed(const SketchPtr& s) const
 {
-    for (const auto& f : m_features) {
-        if (auto e = std::dynamic_pointer_cast<ExtrudeFeature>(f); e && e->sketch() == s) return true;
-        if (auto r = std::dynamic_pointer_cast<RevolveFeature>(f); r && r->sketch() == s) return true;
-    }
-    return false;
+    return isUsed(s.get());
+}
+
+bool PartDocument::isUsed(const Feature* target) const
+{
+    return std::any_of(m_features.begin(), m_features.end(),
+                       [&](const FeaturePtr& f) { return f.get() != target && f->uses(target); });
 }
 
 bool PartDocument::removeFeature(const FeaturePtr& f)
 {
-    if (auto s = std::dynamic_pointer_cast<Sketch>(f); s && isUsed(s)) return false;
+    if (isUsed(f.get())) return false;
     auto it = std::find(m_features.begin(), m_features.end(), f);
     if (it == m_features.end()) return false;
     if (m_endOfPart >= 0 && (it - m_features.begin()) < m_endOfPart) --m_endOfPart;
@@ -106,6 +108,19 @@ bool PartDocument::recompute()
     return !m_errorFeature;
 }
 
+TopoDS_Shape PartDocument::bodyBefore(const FeaturePtr& target) const
+{
+    TopoDS_Shape body;
+    const int end = endOfPart();
+    for (int i = 0; i < end; ++i) {
+        const FeaturePtr& f = m_features[static_cast<size_t>(i)];
+        if (f == target) break;
+        if (f->isSuppressed()) continue;
+        try { body = f->apply(body); } catch (...) { break; }
+    }
+    return body;
+}
+
 std::string PartDocument::nextName(const std::string& prefix) const
 {
     for (int i = 1;; ++i) {
@@ -129,7 +144,7 @@ namespace {
 
 std::string safeName(std::string s)
 {
-    for (char& c : s) if (c == ';' || c == '\n' || c == '\r' || c == '=') c = '_';
+    for (char& c : s) if (c == ';' || c == '\n' || c == '\r' || c == '=' || c == '/' || c == ',') c = '_';
     return s;
 }
 
@@ -198,6 +213,54 @@ std::string need(const std::map<std::string, std::string>& m, const char* key)
     return it->second;
 }
 
+std::string pointList(const std::vector<gp_Pnt>& pts)
+{
+    std::ostringstream o;
+    o.imbue(std::locale::classic());
+    o << std::setprecision(12);
+    for (size_t i = 0; i < pts.size(); ++i)
+        o << (i ? "/" : "") << pts[i].X() << ',' << pts[i].Y() << ',' << pts[i].Z();
+    return o.str();
+}
+
+std::string featureList(const std::vector<FeaturePtr>& fs)
+{
+    std::string out;
+    for (size_t i = 0; i < fs.size(); ++i) out += (i ? "/" : "") + safeName(fs[i]->name());
+    return out;
+}
+
+// Neue Feature-Arten: Werte und Parameter generisch als ;p_<key>= ;x_<key>=
+void writeModifyFeature(std::ostream& o, const FeaturePtr& f)
+{
+    if (auto h = std::dynamic_pointer_cast<HoleFeature>(f)) {
+        o << "hole = " << safeName(h->name()) << ";sketch=" << safeName(h->sketch()->name())
+          << ";kind=" << static_cast<int>(h->kind) << ";through=" << (h->throughAll ? 1 : 0)
+          << ";flip=" << (h->flip ? 1 : 0) << ";dia=" << h->diameter << ";depth=" << h->depth
+          << ";cbd=" << h->cbDiameter << ";cbdepth=" << h->cbDepth << ";csd=" << h->csDiameter
+          << ";csangle=" << h->csAngle << ";tip=" << h->tipAngle;
+    } else if (auto e = std::dynamic_pointer_cast<EdgeFeature>(f)) {
+        o << (f->type() == FeatureType::Fillet ? "fillet = " : "chamfer = ") << safeName(f->name())
+          << ";size=" << e->size << ";edges=" << pointList(e->edges);
+    } else if (auto p = std::dynamic_pointer_cast<PatternFeature>(f)) {
+        o << "pattern = " << safeName(f->name()) << ";kind=" << static_cast<int>(p->kind)
+          << ";features=" << featureList(p->sources)
+          << ";dir1=" << static_cast<int>(p->dir1) << ";flip1=" << (p->flip1 ? 1 : 0) << ";n1=" << p->count1
+          << ";s1=" << p->spacing1 << ";use2=" << (p->useDir2 ? 1 : 0) << ";dir2=" << static_cast<int>(p->dir2)
+          << ";flip2=" << (p->flip2 ? 1 : 0) << ";n2=" << p->count2 << ";s2=" << p->spacing2
+          << ";axis=" << static_cast<int>(p->axis) << ";n=" << p->count << ";angle=" << p->angle;
+    } else if (auto m = std::dynamic_pointer_cast<MirrorFeature>(f)) {
+        o << "mirror = " << safeName(f->name()) << ";plane=" << m->plane << ";features=" << featureList(m->sources);
+    } else {
+        return;
+    }
+    for (const auto& p : f->params()) {
+        if (!p.ref->param.empty()) o << ";p_" << p.key << '=' << p.ref->param;
+        if (!p.ref->expr.empty()) o << ";x_" << p.key << '=' << esc(p.ref->expr);
+    }
+    o << ";suppressed=" << (f->isSuppressed() ? 1 : 0) << '\n';
+}
+
 } // namespace
 
 const char* modifierRoleName(PrintModifier::Role r)
@@ -243,7 +306,7 @@ std::string PartDocument::toText() const
             o << ";suppressed=" << sup << '\n';
             const auto& g = s->geometry();
             for (size_t i = 1; i < g.points.size(); ++i)
-                o << "pt = " << g.points[i].x << ';' << g.points[i].y << '\n';
+                o << "pt = " << g.points[i].x << ';' << g.points[i].y << (g.points[i].center ? ";1" : "") << '\n';
             for (const auto& e : g.entities)
                 o << "ent = " << static_cast<int>(e.type) << ';' << e.p0 << ';' << e.p1 << ';' << e.p2 << ';'
                   << e.r << ';' << (e.construction ? 1 : 0) << '\n';
@@ -267,6 +330,8 @@ std::string PartDocument::toText() const
             if (!r->angleRef().param.empty()) o << ";param=" << r->angleRef().param;
             if (!r->angleRef().expr.empty()) o << ";expr=" << esc(r->angleRef().expr);
             o << '\n';
+        } else {
+            writeModifyFeature(o, f);
         }
     }
     for (const auto& m : m_modifiers)
@@ -284,6 +349,7 @@ bool PartDocument::fromText(const std::string& text, std::string* error)
     std::string name = "Bauteil1";
     std::vector<FeaturePtr> features;
     std::map<std::string, SketchPtr> sketchesByName;
+    std::map<std::string, FeaturePtr> featuresByName;
     std::vector<PrintModifier> modifiers;
     SketchPtr current;
     int endOfPart = -1;
@@ -338,7 +404,8 @@ bool PartDocument::fromText(const std::string& text, std::string* error)
                 auto& g = current->geometry();
                 auto idx = [&](size_t i) { return static_cast<int>(num(parts.at(i))); };
                 if (key == "pt") {
-                    g.addPoint(num(parts.at(0)), num(parts.at(1)));
+                    const int pi = g.addPoint(num(parts.at(0)), num(parts.at(1)));
+                    if (parts.size() > 2 && parts[2] == "1") g.points[static_cast<size_t>(pi)].center = true;
                 } else if (key == "ent") {
                     SkEntity e;
                     e.type = static_cast<SkType>(idx(0));
@@ -398,6 +465,79 @@ bool PartDocument::fromText(const std::string& text, std::string* error)
                 if (auto e = std::dynamic_pointer_cast<ExtrudeFeature>(f)) e->distanceRef() = ref;
                 if (auto r = std::dynamic_pointer_cast<RevolveFeature>(f)) r->angleRef() = ref;
                 features.push_back(f);
+                featuresByName[f->name()] = f;
+            } else if (key == "hole" || key == "fillet" || key == "chamfer" || key == "pattern" || key == "mirror") {
+                const auto a = attrs(parts);
+                auto get = [&](const char* k, double def) { return a.count(k) ? num(a.at(k)) : def; };
+                auto flag = [&](const char* k) { return a.count(k) && a.at(k) == "1"; };
+                auto list = [&]() {
+                    std::vector<FeaturePtr> out;
+                    if (!a.count("features")) return out;
+                    for (const auto& n : split(a.at("features"), '/')) {
+                        if (n.empty()) continue;
+                        auto it = featuresByName.find(n);
+                        if (it == featuresByName.end()) throw std::invalid_argument("Unbekanntes Feature: " + n);
+                        out.push_back(it->second);
+                    }
+                    return out;
+                };
+                FeaturePtr f;
+                if (key == "hole") {
+                    auto it = sketchesByName.find(need(a, "sketch"));
+                    if (it == sketchesByName.end()) throw std::invalid_argument("Unbekannte Skizze: " + need(a, "sketch"));
+                    auto h = std::make_shared<HoleFeature>(parts.at(0), it->second);
+                    h->kind = static_cast<HoleFeature::Kind>(static_cast<int>(get("kind", 0)));
+                    h->throughAll = flag("through");
+                    h->flip = flag("flip");
+                    h->diameter = get("dia", h->diameter);
+                    h->depth = get("depth", h->depth);
+                    h->cbDiameter = get("cbd", h->cbDiameter);
+                    h->cbDepth = get("cbdepth", h->cbDepth);
+                    h->csDiameter = get("csd", h->csDiameter);
+                    h->csAngle = get("csangle", h->csAngle);
+                    h->tipAngle = get("tip", h->tipAngle);
+                    f = h;
+                } else if (key == "fillet" || key == "chamfer") {
+                    std::shared_ptr<EdgeFeature> e;
+                    if (key == "fillet") e = std::make_shared<FilletFeature>(parts.at(0));
+                    else e = std::make_shared<ChamferFeature>(parts.at(0));
+                    e->size = num(need(a, "size"));
+                    for (const auto& pt : split(need(a, "edges"), '/')) {
+                        const auto v = split(pt, ',');
+                        if (v.size() != 3) throw std::invalid_argument("Ungueltige Kante");
+                        e->edges.emplace_back(num(v[0]), num(v[1]), num(v[2]));
+                    }
+                    f = e;
+                } else if (key == "pattern") {
+                    auto p = std::make_shared<PatternFeature>(parts.at(0),
+                        static_cast<PatternFeature::Kind>(static_cast<int>(get("kind", 0))));
+                    p->sources = list();
+                    p->dir1 = static_cast<WorldAxis>(static_cast<int>(get("dir1", 0)));
+                    p->flip1 = flag("flip1");
+                    p->count1 = static_cast<int>(get("n1", 3));
+                    p->spacing1 = get("s1", 20);
+                    p->useDir2 = flag("use2");
+                    p->dir2 = static_cast<WorldAxis>(static_cast<int>(get("dir2", 1)));
+                    p->flip2 = flag("flip2");
+                    p->count2 = static_cast<int>(get("n2", 2));
+                    p->spacing2 = get("s2", 20);
+                    p->axis = static_cast<WorldAxis>(static_cast<int>(get("axis", 2)));
+                    p->count = static_cast<int>(get("n", 6));
+                    p->angle = get("angle", 360);
+                    f = p;
+                } else {
+                    auto m = std::make_shared<MirrorFeature>(parts.at(0));
+                    m->plane = static_cast<int>(get("plane", 2));
+                    m->sources = list();
+                    f = m;
+                }
+                f->setSuppressed(flag("suppressed"));
+                for (const auto& p : f->params()) {
+                    if (auto it = a.find("p_" + p.key); it != a.end()) p.ref->param = it->second;
+                    if (auto it = a.find("x_" + p.key); it != a.end()) p.ref->expr = unesc(it->second);
+                }
+                features.push_back(f);
+                featuresByName[f->name()] = f;
             }
         }
     } catch (const std::exception& e) {
@@ -425,10 +565,9 @@ std::vector<PartDocument::Slot> PartDocument::paramSlots() const
                 out.push_back({&c.ref, &c.value, c.type == ConType::Angle, s.get(),
                                s->name() + ": " + constraintName(c.type)});
             }
-        } else if (auto e = std::dynamic_pointer_cast<ExtrudeFeature>(f)) {
-            out.push_back({&e->distanceRef(), e->distancePtr(), false, nullptr, e->name() + ": Abstand"});
-        } else if (auto r = std::dynamic_pointer_cast<RevolveFeature>(f)) {
-            out.push_back({&r->angleRef(), r->anglePtr(), true, nullptr, r->name() + ": Winkel"});
+        } else {
+            for (const auto& p : f->params())
+                out.push_back({p.ref, p.value, p.angle, nullptr, f->name() + ": " + p.label});
         }
     }
     return out;

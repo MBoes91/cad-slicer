@@ -378,6 +378,101 @@ void testCustomPlane()
     CHECK(std::abs(volume(copy.body()) - expected) < 1.0);
 }
 
+static void testModifyFeatures()
+{
+    fw::PartDocument doc;
+    auto sk = std::make_shared<fw::Sketch>("Skizze1", fw::SketchPlane::XY);
+    sk->addRectangle(0, 0, 40, 40);
+    doc.addFeature(sk);
+    doc.addFeature(std::make_shared<fw::ExtrudeFeature>("Extrusion1", sk, 10.0));
+    auto hs = std::make_shared<fw::Sketch>("Skizze2", fw::SketchPlane::XY, 10.0);
+    hs->geometry().points[static_cast<size_t>(hs->geometry().addPoint(10, 10))].center = true;
+    doc.addFeature(hs);
+    auto hole = std::make_shared<fw::HoleFeature>("Bohrung1", hs);
+    hole->throughAll = true;
+    doc.addFeature(hole);
+    CHECK(doc.recompute());
+    double v = 16000 - M_PI * 9 * 10;
+    CHECK(std::abs(volume(doc.body()) - v) < 1.0);
+
+    // Sackloch 5 mm tief mit Bohrspitze
+    hole->throughAll = false;
+    hole->depth = 5;
+    CHECK(doc.recompute());
+    const double cone = M_PI * 9 * (3 / std::tan(59 * M_PI / 180)) / 3;
+    CHECK(std::abs(volume(doc.body()) - (16000 - M_PI * 9 * 5 - cone)) < 1.0);
+    hole->throughAll = true;
+
+    // Senkung
+    hole->kind = fw::HoleFeature::Kind::Counterbore;
+    hole->cbDiameter = 10; hole->cbDepth = 3;
+    CHECK(doc.recompute());
+    CHECK(std::abs(volume(doc.body()) - (v - M_PI * (25 - 9) * 3)) < 1.0);
+    hole->kind = fw::HoleFeature::Kind::Simple;
+
+    auto pat = std::make_shared<fw::PatternFeature>("Rechteckige Anordnung1", fw::PatternFeature::Kind::Rectangular);
+    pat->sources = {hole};
+    pat->count1 = 2; pat->spacing1 = 20;
+    pat->useDir2 = true; pat->count2 = 2; pat->spacing2 = 20;
+    doc.addFeature(pat);
+    CHECK(doc.recompute());
+    v = 16000 - 4 * M_PI * 9 * 10;
+    CHECK(std::abs(volume(doc.body()) - v) < 1.0);
+    CHECK(!doc.removeFeature(hole));
+
+    auto fil = std::make_shared<fw::FilletFeature>("Rundung1", 2.0);
+    fil->edges = {gp_Pnt(40, 40, 5)};
+    doc.addFeature(fil);
+    auto cha = std::make_shared<fw::ChamferFeature>("Fase1", 1.0);
+    cha->edges = {gp_Pnt(20, 0, 10)};
+    doc.addFeature(cha);
+    CHECK(doc.recompute());
+    v -= (4 - M_PI) * 10 + 0.5 * 40;
+    CHECK(std::abs(volume(doc.body()) - v) < 1.0);
+
+    auto mir = std::make_shared<fw::MirrorFeature>("Spiegeln1");
+    mir->plane = 2;
+    doc.addFeature(mir);
+    CHECK(doc.recompute());
+    CHECK(std::abs(volume(doc.body()) - 2 * v) < 2.0);
+
+    // Parameter: Bohrungsdurchmesser per Gleichung
+    doc.assignParameterNames();
+    std::string diaParam;
+    for (const auto& p : doc.parameters()) if (p.owner == "Bohrung1: Durchmesser") diaParam = p.name;
+    CHECK(!diaParam.empty());
+    CHECK(doc.setModelExpression(diaParam, "4 mm"));
+    CHECK(doc.recompute());
+    CHECK(std::abs(hole->diameter - 4) < 1e-9);
+
+    // Speichern/Laden
+    fw::PartDocument copy;
+    std::string err;
+    CHECK(copy.fromText(doc.toText(), &err));
+    CHECK(copy.toText() == doc.toText());
+    CHECK(copy.recompute());
+    CHECK(std::abs(volume(copy.body()) - volume(doc.body())) < 0.1);
+
+    // Runde Anordnung um Z: 6 Bohrungen
+    fw::PartDocument d2;
+    auto s1 = std::make_shared<fw::Sketch>("Skizze1", fw::SketchPlane::XY);
+    s1->addCircle(0, 0, 30);
+    d2.addFeature(s1);
+    d2.addFeature(std::make_shared<fw::ExtrudeFeature>("Extrusion1", s1, 5.0));
+    auto s2 = std::make_shared<fw::Sketch>("Skizze2", fw::SketchPlane::XY, 5.0);
+    s2->geometry().points[static_cast<size_t>(s2->geometry().addPoint(20, 0))].center = true;
+    d2.addFeature(s2);
+    auto h2 = std::make_shared<fw::HoleFeature>("Bohrung1", s2);
+    h2->throughAll = true; h2->diameter = 4;
+    d2.addFeature(h2);
+    auto cp = std::make_shared<fw::PatternFeature>("Runde Anordnung1", fw::PatternFeature::Kind::Circular);
+    cp->sources = {h2};
+    cp->count = 6;
+    d2.addFeature(cp);
+    CHECK(d2.recompute());
+    CHECK(std::abs(volume(d2.body()) - (M_PI * 900 * 5 - 6 * M_PI * 4 * 5)) < 2.0);
+}
+
 void testEndOfPart()
 {
     fw::PartDocument doc;
@@ -480,6 +575,7 @@ int main()
 {
     testParameters();
     testEndOfPart();
+    testModifyFeatures();
     testCustomPlane();
     testModifiers();
     testSketchSolver();

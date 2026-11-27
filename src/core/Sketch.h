@@ -39,6 +39,7 @@ public:
     int addCircle(double cx, double cy, double r); // liefert Index der Durchmesser-Bemassung
 
     bool isEmpty() const;
+    bool hasCenterPoints() const;
 
     // Sichtbarkeit im 3D-Fenster: Auto = sichtbar, solange kein Feature sie verbraucht
     enum class Visibility { Auto, Shown, Hidden };

@@ -88,6 +88,17 @@ private:
     void finishSketch(bool accept);
     void cmdExtrude();
     void cmdRevolve();
+    void cmdHole();
+    void cmdEdgeFeature(bool fillet);
+    void cmdPattern(bool circular);
+    void cmdMirror();
+    // Palette der Aenderungs-Features (Bohrung, Rundung/Fase, Muster, Spiegeln)
+    bool buildModifyPanel(const fw::FeaturePtr& f);
+    void showEdgeSelection();
+    void clearEdgeSelection();
+    bool pickEdge(const Handle(AIS_InteractiveObject)& picked);
+    // Features vor f, die vervielfaeltigt werden koennen
+    std::vector<fw::FeaturePtr> patternCandidates(const fw::FeaturePtr& f) const;
     void cmdEditFeature(const fw::FeaturePtr& f);
     void cmdDeleteFeature(const fw::FeaturePtr& f);
     void cmdToggleSuppress(const fw::FeaturePtr& f);
@@ -170,6 +181,11 @@ private:
     bool m_pickingPlane = false;
     bool m_draggingEnd = false;
     std::vector<Handle(AIS_Shape)> m_planeAis;
+    // Kantenauswahl fuer Rundung/Fase
+    Handle(AIS_Shape) m_edgeBaseAis;
+    Handle(AIS_Shape) m_edgeSelAis;
+    QLabel* m_edgeCount = nullptr;
+    QAction *m_actHole = nullptr, *m_actFillet = nullptr, *m_actChamfer = nullptr;
     bool m_inPrintEnv = false;
     int m_visualStyle = 1; // 0 schattiert, 1 mit Kanten, 2 Drahtkoerper
     QAction* m_styleShaded = nullptr;

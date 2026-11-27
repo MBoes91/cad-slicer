@@ -4,17 +4,20 @@
 
 namespace fw {
 
-enum class BooleanOp { Join, Cut, Intersect };
 const char* booleanOpName(BooleanOp op);
 
 // Extrusion eines Skizzenprofils entlang der Skizzennormalen.
-class ExtrudeFeature : public Feature {
+class ExtrudeFeature : public Feature, public ToolFeature {
 public:
     ExtrudeFeature(std::string name, SketchPtr sketch, double distance,
                    BooleanOp op = BooleanOp::Join, bool symmetric = false);
 
     FeatureType type() const override { return FeatureType::Extrude; }
     TopoDS_Shape apply(const TopoDS_Shape& body) const override;
+    TopoDS_Shape tool(const TopoDS_Shape& body) const override;
+    BooleanOp toolOp() const override { return m_op; }
+    std::vector<ParamSlot> params() override { return {{"distance", "Abstand", &m_distRef, &m_distance, false}}; }
+    bool uses(const Feature* o) const override { return o == m_sketch.get(); }
 
     SketchPtr sketch() const { return m_sketch; }
     void setSketch(SketchPtr s) { m_sketch = std::move(s); }
@@ -39,13 +42,17 @@ private:
 enum class RevolveAxis { SketchX, SketchY };
 
 // Drehung eines Skizzenprofils um eine Skizzenachse.
-class RevolveFeature : public Feature {
+class RevolveFeature : public Feature, public ToolFeature {
 public:
     RevolveFeature(std::string name, SketchPtr sketch, RevolveAxis axis,
                    double angleDeg = 360.0, BooleanOp op = BooleanOp::Join);
 
     FeatureType type() const override { return FeatureType::Revolve; }
     TopoDS_Shape apply(const TopoDS_Shape& body) const override;
+    TopoDS_Shape tool(const TopoDS_Shape& body) const override;
+    BooleanOp toolOp() const override { return m_op; }
+    std::vector<ParamSlot> params() override { return {{"angle", "Winkel", &m_angleRef, &m_angle, true}}; }
+    bool uses(const Feature* o) const override { return o == m_sketch.get(); }
 
     SketchPtr sketch() const { return m_sketch; }
     void setSketch(SketchPtr s) { m_sketch = std::move(s); }
