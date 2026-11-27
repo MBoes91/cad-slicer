@@ -1,4 +1,5 @@
 // Einfache Tests ohne Framework: Bauteil modellieren, slicen, G-Code pruefen.
+#include "core/Expression.h"
 #include "core/PartDocument.h"
 #include "slicer/Settings.h"
 #include "slicer/Slicer.h"
@@ -418,8 +419,66 @@ void testEndOfPart()
     CHECK(doc.endOfPart() == 5);
 }
 
+void testParameters()
+{
+    // Ausdruecke
+    auto none = fw::ParamLookup{};
+    CHECK(std::abs(fw::evaluate("2 + 3 * 4", none) - 14.0) < 1e-12);
+    CHECK(std::abs(fw::evaluate("12,5 mm", none) - 12.5) < 1e-12);
+    CHECK(std::abs(fw::evaluate("1 cm + 2 mm", none) - 12.0) < 1e-12);
+    CHECK(std::abs(fw::evaluate("(2 + 3) ^ 2", none) - 25.0) < 1e-12);
+    CHECK(std::abs(fw::evaluate("sin(30)", none) - 0.5) < 1e-12);
+    CHECK(std::abs(fw::evaluate("max(3; 7; 5)", none) - 7.0) < 1e-12);
+    CHECK(std::abs(fw::evaluate("-PI", none) + M_PI) < 1e-12);
+    bool threw = false;
+    try { fw::evaluate("1 / 0", none); } catch (const std::exception&) { threw = true; }
+    CHECK(threw);
+    CHECK(fw::isPlainNumber("12,5 mm"));
+    CHECK(fw::isPlainNumber("-3"));
+    CHECK(!fw::isPlainNumber("d0 * 2"));
+    CHECK(!fw::isPlainNumber("2 * 3"));
+    CHECK(fw::isValidParamName("Breite_2"));
+    CHECK(!fw::isValidParamName("2Breite"));
+    CHECK(!fw::isValidParamName("mm"));
+
+    // Rechteck 20 x 10 (d0, d1), Extrusion (d2); Breite per Benutzerparameter, Hoehe = d0 / 2
+    fw::PartDocument doc;
+    auto sk = std::make_shared<fw::Sketch>("Skizze1", fw::SketchPlane::XY);
+    sk->addRectangle(0, 0, 20, 10);
+    doc.addFeature(sk);
+    auto ex = std::make_shared<fw::ExtrudeFeature>("Extrusion1", sk, 5.0);
+    doc.addFeature(ex);
+    CHECK(doc.recompute());
+    auto params = doc.parameters();
+    CHECK(params.size() == 3);
+    CHECK(params[0].name == "d0" && params[1].name == "d1" && params[2].name == "d2");
+    CHECK(std::abs(volume(doc.body()) - 1000.0) < 1.0);
+
+    doc.userParameters().push_back({"Breite", "30 mm", "Gesamtbreite"});
+    CHECK(doc.setModelExpression("d0", "Breite"));
+    CHECK(doc.setModelExpression("d1", "d0 / 2"));
+    CHECK(doc.setModelExpression("d2", "4"));
+    CHECK(doc.recompute());
+    CHECK(std::abs(volume(doc.body()) - 30.0 * 15.0 * 4.0) < 1.0);
+    CHECK(std::abs(ex->distance() - 4.0) < 1e-9);
+
+    // Speichern/Laden erhaelt Gleichungen
+    fw::PartDocument copy;
+    CHECK(copy.fromText(doc.toText()));
+    CHECK(copy.toText() == doc.toText());
+    copy.userParameters()[0].expr = "40";
+    CHECK(copy.recompute());
+    CHECK(std::abs(volume(copy.body()) - 40.0 * 20.0 * 4.0) < 1.0);
+
+    // Zirkelbezug wird gemeldet
+    CHECK(doc.setModelExpression("d0", "d1 * 2"));
+    CHECK(!doc.recompute());
+    CHECK(doc.errorMessage().find("Zirkelbezug") != std::string::npos);
+}
+
 int main()
 {
+    testParameters();
     testEndOfPart();
     testCustomPlane();
     testModifiers();

@@ -42,12 +42,19 @@ enum class ConType {
 const char* constraintName(ConType t);
 bool isDimension(ConType t);
 
+// Name und Gleichung eines Modellparameters, z. B. "d3" mit "d0 * 2" (leer = fester Wert)
+struct ParamRef {
+    std::string param;
+    std::string expr;
+};
+
 struct SkConstraint {
     ConType type = ConType::Coincident;
     int a = -1, b = -1;
     double value = 0, value2 = 0;
     bool driving = true;          // false = getriebene Bemassung (nur Anzeige)
     double labelX = 0, labelY = 0; // Lage der Masszahl (Skizzenkoordinaten, relativ)
+    ParamRef ref;                 // Modellparameter (nur Bemassungen)
 };
 
 enum class SolveStatus { Ok, Conflict, Failed };

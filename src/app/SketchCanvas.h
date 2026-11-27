@@ -5,6 +5,7 @@
 #include <QPolygonF>
 #include <QWidget>
 
+#include <functional>
 #include <optional>
 #include <vector>
 
@@ -24,6 +25,10 @@ public:
     // inPlane: Kante liegt in der Skizzenebene (dunkler dargestellt).
     struct RefLine { QPolygonF pts; bool inPlane = false; };
     void setReference(std::vector<RefLine> lines) { m_reference = std::move(lines); }
+
+    // Wertet Gleichungen in Bemassungen aus (Parameter des Bauteils)
+    using Evaluator = std::function<bool(const QString& text, double& value, QString& error)>;
+    void setEvaluator(Evaluator e) { m_eval = std::move(e); }
 
     void begin(const fw::Sketch& sketch);
     const fw::SketchGeometry& geometry() const { return m_geo; }
@@ -50,6 +55,9 @@ protected:
     void resizeEvent(QResizeEvent*) override;
 
 private:
+    // Fragt Wert oder Gleichung ab; false bei Abbruch
+    bool askValue(const QString& title, const QString& label, const QString& initial, double& value, std::string& expr);
+    Evaluator m_eval;
     std::vector<RefLine> m_reference;
     struct Hit {
         enum Kind { None, Point, Entity, Constraint } kind = None;

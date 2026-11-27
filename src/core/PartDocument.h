@@ -8,6 +8,18 @@
 
 namespace fw {
 
+struct UserParameter {
+    std::string name, expr, comment;
+    double value = 0;
+};
+
+// Eintrag der Parametertabelle (fx)
+struct ParameterInfo {
+    std::string name, expr, unit, owner, comment;
+    double value = 0;
+    bool user = false;
+};
+
 // Ein Bauteil: geordnete Liste von Features, aus der der Koerper
 // parametrisch neu berechnet wird.
 class PartDocument {
@@ -35,6 +47,18 @@ public:
     // Umbenennen mit Pruefung auf eindeutige Namen
     bool rename(const FeaturePtr& f, const std::string& name);
 
+    // Parameter (fx): jede Bemassung und jeder Feature-Wert ist ein Modellparameter
+    // (d0, d1, ...), dazu kommen Benutzerparameter. Gleichungen duerfen alle
+    // Parameter verwenden; recompute() wertet sie aus.
+    std::vector<UserParameter>& userParameters() { return m_userParams; }
+    const std::vector<UserParameter>& userParameters() const { return m_userParams; }
+    std::vector<ParameterInfo> parameters() const;
+    // Setzt Gleichung (oder Zahl) eines Modellparameters; false bei unbekanntem Namen
+    bool setModelExpression(const std::string& name, const std::string& expr);
+    // Wertet einen Ausdruck mit den aktuellen Parameterwerten aus
+    bool evaluateExpression(const std::string& expr, double& out, std::string* error = nullptr) const;
+    void assignParameterNames();
+
     // Berechnet den Koerper neu. Gibt false zurueck, wenn ein Feature
     // fehlschlaegt; errorFeature/errorMessage nennen dann die Ursache.
     bool recompute();
@@ -55,7 +79,18 @@ public:
     void setName(std::string name) { m_name = std::move(name); }
 
 private:
+    struct Slot {
+        ParamRef* ref;
+        double* value;
+        bool angle;
+        Sketch* sketch;
+        std::string owner;
+    };
+    std::vector<Slot> paramSlots() const;
+    bool updateParameters(std::string& error);
+
     std::string m_name;
+    std::vector<UserParameter> m_userParams;
     std::vector<FeaturePtr> m_features;
     std::vector<PrintModifier> m_modifiers;
     int m_endOfPart = -1; // -1: ganz am Ende

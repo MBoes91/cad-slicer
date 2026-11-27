@@ -1,4 +1,6 @@
 #include "app/Dialogs.h"
+#include "core/Expression.h"
+#include <set>
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -88,6 +90,148 @@ fw::SketchPlane NewSketchDialog::plane() const
 }
 
 double NewSketchDialog::offset() const { return m_offset->value(); }
+
+// ---------------------------------------------------------------------------
+namespace {
+QTableWidgetItem* cell(const QString& text, bool editable)
+{
+    auto* it = new QTableWidgetItem(text);
+    if (!editable) it->setFlags(it->flags() & ~Qt::ItemIsEditable);
+    return it;
+}
+
+QString fmtValue(double v)
+{
+    QString t = QString::number(v, 'f', 4);
+    while (t.contains('.') && (t.endsWith('0') || t.endsWith('.'))) t.chop(1);
+    return t.replace('.', ',');
+}
+} // namespace
+
+ParameterDialog::ParameterDialog(const std::vector<fw::ParameterInfo>& params, QWidget* parent) : QDialog(parent)
+{
+    setWindowTitle("Parameter");
+    resize(820, 480);
+    auto* v = new QVBoxLayout(this);
+    m_table = new QTableWidget(0, 5);
+    m_table->setHorizontalHeaderLabels({"Parametername", "Einheit", "Gleichung", "Nennwert", "Kommentar"});
+    m_table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+    m_table->horizontalHeader()->setSectionResizeMode(4, QHeaderView::Stretch);
+    m_table->verticalHeader()->hide();
+    m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
+    v->addWidget(m_table);
+
+    auto header = [this](const QString& title) {
+        const int r = m_table->rowCount();
+        m_table->insertRow(r);
+        auto* it = cell(title, false);
+        QFont f = it->font();
+        f.setBold(true);
+        it->setFont(f);
+        it->setBackground(QColor(232, 237, 244));
+        m_table->setItem(r, 0, it);
+        m_table->setSpan(r, 0, 1, 5);
+        return r;
+    };
+    header("Modellparameter");
+    for (const auto& p : params) {
+        if (p.user) continue;
+        const int r = m_table->rowCount();
+        m_table->insertRow(r);
+        m_table->setItem(r, 0, cell(QString::fromStdString(p.name), false));
+        m_table->setItem(r, 1, cell(QString::fromStdString(p.unit), false));
+        m_table->setItem(r, 2, cell(p.expr.empty() ? fmtValue(p.value) : QString::fromStdString(p.expr), true));
+        m_table->setItem(r, 3, cell(fmtValue(p.value), false));
+        m_table->setItem(r, 4, cell(QString::fromStdString(p.owner), false));
+    }
+    m_userHeader = header("Benutzerparameter");
+    for (const auto& p : params)
+        if (p.user) addUserRow({p.name, p.expr, p.comment, p.value});
+
+    auto* row = new QHBoxLayout;
+    auto* add = new QPushButton(QString::fromUtf8("Benutzerparameter hinzufügen"));
+    auto* del = new QPushButton(QString::fromUtf8("Löschen"));
+    row->addWidget(add);
+    row->addWidget(del);
+    row->addStretch();
+    auto* hint = new QLabel(QString::fromUtf8("Gleichungen: + − * / ^ ( ), Einheiten mm cm in grd, "
+                                              "Funktionen sin cos tan sqrt abs round min max (Trennzeichen ;)"));
+    hint->setStyleSheet("color: #5a6270;");
+    v->addLayout(row);
+    v->addWidget(hint);
+    connect(add, &QPushButton::clicked, this, [this] {
+        int n = 1;
+        auto exists = [this](const QString& name) {
+            for (int r = 0; r < m_table->rowCount(); ++r)
+                if (m_table->item(r, 0) && m_table->item(r, 0)->text() == name) return true;
+            return false;
+        };
+        while (exists(QString("Parameter%1").arg(n))) ++n;
+        addUserRow({QString("Parameter%1").arg(n).toStdString(), "1", "", 1.0});
+        m_table->editItem(m_table->item(m_table->rowCount() - 1, 0));
+    });
+    connect(del, &QPushButton::clicked, this, [this] {
+        const int r = m_table->currentRow();
+        if (r > m_userHeader) m_table->removeRow(r);
+    });
+
+    auto* box = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    box->button(QDialogButtonBox::Ok)->setText("Fertig");
+    connect(box, &QDialogButtonBox::accepted, this, [this] { if (validate()) accept(); });
+    connect(box, &QDialogButtonBox::rejected, this, &QDialog::reject);
+    v->addWidget(box);
+}
+
+void ParameterDialog::addUserRow(const fw::UserParameter& u)
+{
+    const int r = m_table->rowCount();
+    m_table->insertRow(r);
+    m_table->setItem(r, 0, cell(QString::fromStdString(u.name), true));
+    m_table->setItem(r, 1, cell("", false));
+    m_table->setItem(r, 2, cell(QString::fromStdString(u.expr), true));
+    m_table->setItem(r, 3, cell(fmtValue(u.value), false));
+    m_table->setItem(r, 4, cell(QString::fromStdString(u.comment), true));
+}
+
+bool ParameterDialog::validate()
+{
+    std::set<std::string> names;
+    for (int r = 1; r < m_table->rowCount(); ++r) {
+        if (r == m_userHeader) continue;
+        const std::string name = m_table->item(r, 0)->text().trimmed().toStdString();
+        if (r > m_userHeader && !fw::isValidParamName(name)) {
+            QMessageBox::warning(this, "Parameter", QString::fromUtf8("Ungültiger Name: \"%1\"\n"
+                "Namen beginnen mit einem Buchstaben und enthalten nur Buchstaben, Ziffern und _.").arg(QString::fromStdString(name)));
+            return false;
+        }
+        if (!names.insert(name).second) {
+            QMessageBox::warning(this, "Parameter", QString::fromUtf8("Der Name \"%1\" kommt doppelt vor.").arg(QString::fromStdString(name)));
+            return false;
+        }
+        if (m_table->item(r, 2)->text().trimmed().isEmpty()) {
+            QMessageBox::warning(this, "Parameter", QString::fromUtf8("Für \"%1\" fehlt die Gleichung.").arg(QString::fromStdString(name)));
+            return false;
+        }
+    }
+    return true;
+}
+
+std::vector<std::pair<std::string, std::string>> ParameterDialog::modelExpressions() const
+{
+    std::vector<std::pair<std::string, std::string>> out;
+    for (int r = 1; r < m_userHeader; ++r)
+        out.emplace_back(m_table->item(r, 0)->text().toStdString(), m_table->item(r, 2)->text().trimmed().toStdString());
+    return out;
+}
+
+std::vector<fw::UserParameter> ParameterDialog::userParameters() const
+{
+    std::vector<fw::UserParameter> out;
+    for (int r = m_userHeader + 1; r < m_table->rowCount(); ++r)
+        out.push_back({m_table->item(r, 0)->text().trimmed().toStdString(), m_table->item(r, 2)->text().trimmed().toStdString(),
+                       m_table->item(r, 4)->text().toStdString(), 0.0});
+    return out;
+}
 
 // ---------------------------------------------------------------------------
 namespace profiles {

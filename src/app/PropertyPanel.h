@@ -1,7 +1,10 @@
 #pragma once
 
 #include <QIcon>
+#include <QLineEdit>
 #include <QWidget>
+
+#include <functional>
 
 class QFormLayout;
 class QLabel;
@@ -37,4 +40,33 @@ private:
     QLabel* m_message = nullptr;
     QWidget* m_body = nullptr;
     QVBoxLayout* m_bodyLayout = nullptr;
+};
+
+// Eingabefeld fuer Werte wie in Inventor: nimmt Zahlen ("12,5 mm") oder
+// Gleichungen mit Parametern ("d0 * 2", "Breite / 2") an.
+class ValueEdit : public QLineEdit {
+    Q_OBJECT
+public:
+    using Evaluator = std::function<bool(const QString& text, double& value, QString& error)>;
+    ValueEdit(const QString& unit, Evaluator eval, QWidget* parent = nullptr);
+
+    void setValue(double v, bool notify = false);
+    void setExpression(const QString& expr, double v);
+    double value() const { return m_value; }
+    QString expression() const { return m_expr; } // leer bei festem Wert
+
+    static QString format(double v);
+    void commit(); // Eingabe uebernehmen (auch ohne Fokuswechsel)
+
+signals:
+    void valueEdited();
+
+protected:
+    void keyPressEvent(QKeyEvent* e) override;
+
+private:
+    QString m_unit;
+    Evaluator m_eval;
+    double m_value = 0;
+    QString m_expr;
 };

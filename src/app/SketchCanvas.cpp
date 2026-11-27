@@ -1,6 +1,11 @@
 #include "app/SketchCanvas.h"
 
 #include <QInputDialog>
+#include <QLineEdit>
+#include <QMessageBox>
+
+#include "app/PropertyPanel.h"
+#include "core/Expression.h"
 #include <QKeyEvent>
 #include <QMessageBox>
 #include <QMouseEvent>
@@ -339,11 +344,11 @@ void SketchCanvas::handleDimensionTool(const Hit& h, const QPointF& screen)
     const QPointF sp = toSketch(screen);
     auto finish = [this, sp](SkConstraint c) {
         const double measured = m_geo.measure(c);
-        bool ok = false;
-        const double entered = QInputDialog::getDouble(this, QString::fromUtf8("Bemaßung"),
-            QString::fromUtf8("%1:").arg(QString::fromUtf8(constraintName(c.type))),
-            std::abs(measured), 0.0, 100000.0, 3, &ok);
-        if (!ok) return;
+        double entered = 0;
+        std::string expr;
+        if (!askValue(QString::fromUtf8("Bemaßung"), QString::fromUtf8(constraintName(c.type)),
+                      ValueEdit::format(std::abs(measured)), entered, expr)) return;
+        c.ref.expr = expr;
         c.value = (c.type == ConType::DistanceX || c.type == ConType::DistanceY || c.type == ConType::Angle)
             ? (measured < 0 ? -entered : entered) : entered;
         // Masszahl dort, wo geklickt wurde
@@ -431,6 +436,30 @@ QPointF SketchCanvas::constraintAnchor(const SkConstraint& c) const
     }
 }
 
+bool SketchCanvas::askValue(const QString& title, const QString& label, const QString& initial, double& value, std::string& expr)
+{
+    QString text = initial;
+    for (;;) {
+        bool ok = false;
+        text = QInputDialog::getText(this, title,
+            label + QString::fromUtf8(":\n(Zahl oder Gleichung, z. B. d0 * 2)"), QLineEdit::Normal, text, &ok);
+        if (!ok) return false;
+        const std::string st = text.trimmed().toStdString();
+        if (fw::isPlainNumber(st)) {
+            value = std::abs(fw::evaluate(st, {}));
+            expr.clear();
+            return true;
+        }
+        QString err;
+        if (m_eval && m_eval(text.trimmed(), value, err)) {
+            value = std::abs(value);
+            expr = st;
+            return true;
+        }
+        QMessageBox::warning(this, title, QString::fromUtf8("Die Eingabe ist ungültig: %1").arg(err));
+    }
+}
+
 QString SketchCanvas::dimensionText(const SkConstraint& c) const
 {
     const double v = c.driving ? c.value : m_geo.measure(c);
@@ -441,6 +470,7 @@ QString SketchCanvas::dimensionText(const SkConstraint& c) const
     case ConType::Angle: t = fmt(std::abs(v)) + QString::fromUtf8("°"); break;
     default: t = fmt(std::abs(v)); break;
     }
+    if (!c.ref.expr.empty()) t = "fx:" + t; // durch Gleichung bestimmt, wie in Inventor
     return c.driving ? t : "(" + t + ")";
 }
 
@@ -818,15 +848,21 @@ void SketchCanvas::editDimension(int index)
         updateStatus();
         return;
     }
-    bool ok = false;
-    const double v = QInputDialog::getDouble(this, QString::fromUtf8("Bemaßung bearbeiten"),
-        QString::fromUtf8("%1:").arg(QString::fromUtf8(constraintName(c.type))), std::abs(c.value), 0.0, 100000.0, 3, &ok);
-    if (!ok) return;
+    double v = 0;
+    std::string expr;
+    const QString label = QString::fromUtf8(constraintName(c.type)) +
+        (c.ref.param.empty() ? QString() : QString(" (%1)").arg(QString::fromStdString(c.ref.param)));
+    if (!askValue(QString::fromUtf8("Bemaßung bearbeiten"), label,
+                  c.ref.expr.empty() ? ValueEdit::format(std::abs(c.value)) : QString::fromStdString(c.ref.expr), v, expr))
+        return;
     const double old = c.value;
+    const std::string oldExpr = c.ref.expr;
     c.value = c.value < 0 ? -v : v;
+    c.ref.expr = expr;
     resolve();
     if (m_lastSolve.status != SolveStatus::Ok) {
         m_geo.constraints[static_cast<size_t>(index)].value = old;
+        m_geo.constraints[static_cast<size_t>(index)].ref.expr = oldExpr;
         resolve();
         m_message = QString::fromUtf8("Dieser Wert lässt sich nicht erreichen.");
         updateStatus();

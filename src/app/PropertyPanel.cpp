@@ -9,6 +9,10 @@
 #include <QToolButton>
 #include <QVBoxLayout>
 
+#include "core/Expression.h"
+
+#include <cmath>
+
 PropertyPanel::PropertyPanel(QWidget* parent) : QWidget(parent)
 {
     setObjectName("Eigenschaften");
@@ -135,4 +139,76 @@ void PropertyPanel::keyPressEvent(QKeyEvent* e)
         return;
     }
     QWidget::keyPressEvent(e);
+}
+
+// --- ValueEdit -------------------------------------------------------------------
+
+ValueEdit::ValueEdit(const QString& unit, Evaluator eval, QWidget* parent)
+    : QLineEdit(parent), m_unit(unit), m_eval(std::move(eval))
+{
+    setToolTip(QString::fromUtf8("Zahl oder Gleichung, z. B. 12,5 · d0 * 2 · Breite / 2"));
+    connect(this, &QLineEdit::editingFinished, this, &ValueEdit::commit);
+}
+
+QString ValueEdit::format(double v)
+{
+    QString t = QString::number(v, 'f', 3);
+    while (t.contains('.') && (t.endsWith('0') || t.endsWith('.'))) t.chop(1);
+    t.replace('.', ',');
+    return t;
+}
+
+void ValueEdit::setValue(double v, bool notify)
+{
+    m_value = v;
+    m_expr.clear();
+    setText(format(v) + (m_unit.isEmpty() ? QString() : " " + m_unit));
+    setStyleSheet({});
+    if (notify) emit valueEdited();
+}
+
+void ValueEdit::setExpression(const QString& expr, double v)
+{
+    if (expr.isEmpty()) { setValue(v); return; }
+    m_value = v;
+    m_expr = expr;
+    setText(expr);
+    setStyleSheet({});
+}
+
+void ValueEdit::commit()
+{
+    const QString t = text().trimmed();
+    const std::string st = t.toStdString();
+    double v = 0;
+    QString err;
+    if (fw::isPlainNumber(st)) {
+        v = fw::evaluate(st, {});
+        if (std::abs(v - m_value) < 1e-12 && m_expr.isEmpty()) { setValue(v); return; }
+        setValue(v, true);
+        return;
+    }
+    if (m_eval && m_eval(t, v, err)) {
+        if (t == m_expr && std::abs(v - m_value) < 1e-12) return;
+        m_value = v;
+        m_expr = t;
+        setStyleSheet({});
+        setToolTip(QString::fromUtf8("= %1 %2").arg(format(v), m_unit));
+        emit valueEdited();
+        return;
+    }
+    setStyleSheet("QLineEdit { border: 1px solid #c0392b; background: #fdecea; }");
+    setToolTip(err.isEmpty() ? QString::fromUtf8("Ungültige Eingabe") : err);
+}
+
+void ValueEdit::keyPressEvent(QKeyEvent* e)
+{
+    // Pfeiltasten aendern feste Werte schrittweise
+    if ((e->key() == Qt::Key_Up || e->key() == Qt::Key_Down) && m_expr.isEmpty()) {
+        const double step = (e->modifiers() & Qt::ShiftModifier) ? 10.0 : 1.0;
+        setValue(std::max(0.0, m_value + (e->key() == Qt::Key_Up ? step : -step)), true);
+        selectAll();
+        return;
+    }
+    QLineEdit::keyPressEvent(e);
 }

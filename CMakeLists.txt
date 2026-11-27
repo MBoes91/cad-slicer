@@ -30,7 +30,8 @@ add_library(formwerk_core STATIC
   src/core/Sketch.cpp
   src/core/SketchGeometry.cpp
   src/core/Features.cpp
-  src/core/PartDocument.cpp)
+  src/core/PartDocument.cpp
+  src/core/Expression.cpp)
 target_include_directories(formwerk_core PUBLIC src ${OpenCASCADE_INCLUDE_DIR})
 target_link_libraries(formwerk_core PUBLIC ${OCC_CORE_LIBS} TKSTL)
 

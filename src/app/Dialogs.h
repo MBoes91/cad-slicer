@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/Features.h"
+#include "core/PartDocument.h"
 #include "slicer/PrinterProfile.h"
 #include "slicer/Settings.h"
 #include "core/PrintModifier.h"
@@ -25,6 +25,22 @@ public:
 private:
     QComboBox* m_plane;
     QDoubleSpinBox* m_offset;
+};
+
+// Parameter (fx): Modellparameter mit Gleichungen und Benutzerparameter
+class ParameterDialog : public QDialog {
+    Q_OBJECT
+public:
+    ParameterDialog(const std::vector<fw::ParameterInfo>& params, QWidget* parent = nullptr);
+    // Gleichungen der Modellparameter (Name -> Gleichung oder Zahl)
+    std::vector<std::pair<std::string, std::string>> modelExpressions() const;
+    std::vector<fw::UserParameter> userParameters() const;
+
+private:
+    void addUserRow(const fw::UserParameter& u);
+    bool validate();
+    QTableWidget* m_table;
+    int m_userHeader = 0;
 };
 
 // Druckeinstellungen: alle Einstellungen nach Gruppen, Profile verwalten,

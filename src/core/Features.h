@@ -24,8 +24,12 @@ public:
     void setOperation(BooleanOp op) { m_op = op; }
     bool symmetric() const { return m_symmetric; }
     void setSymmetric(bool s) { m_symmetric = s; }
+    ParamRef& distanceRef() { return m_distRef; }
+    const ParamRef& distanceRef() const { return m_distRef; }
+    double* distancePtr() { return &m_distance; }
 
 private:
+    ParamRef m_distRef;
     SketchPtr m_sketch;
     double m_distance;
     BooleanOp m_op;
@@ -51,8 +55,12 @@ public:
     void setAngle(double a) { m_angle = a; }
     BooleanOp operation() const { return m_op; }
     void setOperation(BooleanOp op) { m_op = op; }
+    ParamRef& angleRef() { return m_angleRef; }
+    const ParamRef& angleRef() const { return m_angleRef; }
+    double* anglePtr() { return &m_angle; }
 
 private:
+    ParamRef m_angleRef;
     SketchPtr m_sketch;
     RevolveAxis m_axis;
     double m_angle;

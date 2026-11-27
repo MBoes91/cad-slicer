@@ -358,6 +358,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
         else statusBar()->showMessage(t);
     });
     connect(m_view, &OcctView::contextMenuAt, this, [this](const QPoint& pos) { showViewContextMenu(pos); });
+    m_canvas->setEvaluator(evaluator());
     connect(m_canvas, &SketchCanvas::contextMenuAt, this, [this](const QPoint& pos) { showSketchContextMenu(pos); });
 
     // Grafikbereich: 3D-Fenster mit Navigationsleiste rechts
@@ -630,6 +631,7 @@ void MainWindow::showViewContextMenu(const QPoint& pos)
     mm->setItem(MarkingMenu::SW, m_actPrev);
     mm->setItem(MarkingMenu::W, m_actFit);
     mm->setItem(MarkingMenu::NW, m_inPrintEnv ? m_actExitPrint : m_actPrintEnv);
+    mm->addOverflow(m_actParams);
     mm->addOverflow(m_actMeasure);
     mm->addOverflow(m_actUpdate);
     mm->addOverflowSeparator();
@@ -661,6 +663,40 @@ void MainWindow::showSketchContextMenu(const QPoint& pos)
     mm->addOverflowSeparator();
     mm->addOverflow(m_sketchCancel);
     mm->popup(pos);
+}
+
+ValueEdit::Evaluator MainWindow::evaluator()
+{
+    return [this](const QString& text, double& value, QString& error) {
+        std::string err;
+        const bool ok = m_doc.evaluateExpression(text.toStdString(), value, &err);
+        error = QString::fromStdString(err);
+        return ok;
+    };
+}
+
+void MainWindow::cmdParameters()
+{
+    m_doc.recompute(); // Namen vergeben, Werte aktuell
+    ParameterDialog dlg(m_doc.parameters(), this);
+    if (dlg.exec() != QDialog::Accepted) return;
+    const std::string backup = m_doc.toText();
+    m_doc.userParameters() = dlg.userParameters();
+    try {
+        for (const auto& [name, expr] : dlg.modelExpressions()) m_doc.setModelExpression(name, expr);
+    } catch (const std::exception& e) {
+        m_doc.fromText(backup);
+        QMessageBox::warning(this, "Parameter", QString::fromUtf8("Ungültiger Wert: %1").arg(e.what()));
+        return;
+    }
+    if (!m_doc.recompute() && !m_doc.errorFeature()) {
+        const QString msg = QString::fromStdString(m_doc.errorMessage());
+        m_doc.fromText(backup);
+        rebuild();
+        QMessageBox::warning(this, "Parameter", QString::fromUtf8("Die Parameter wurden nicht übernommen:\n%1").arg(msg));
+        return;
+    }
+    rebuild();
 }
 
 void MainWindow::cmdMeasure()
@@ -722,6 +758,10 @@ void MainWindow::buildRibbon()
     // --- Prüfen / Verwalten
     auto* aMeasure = act("Physikalische\nEigenschaften", Icon::Measure, {}, [this] { cmdMeasure(); });
     auto* aUpdate = act("Neu\nerstellen", Icon::Update, QKeySequence("Ctrl+Shift+Q"), [this] { rebuild(); });
+    auto* aParams = act("Parameter", Icon::Measure, {}, [this] { cmdParameters(); });
+    aParams->setIcon(textIcon("fx"));
+    aParams->setToolTip(QString::fromUtf8("Parameter: Bemaßungen und Werte mit Gleichungen verknüpfen, Benutzerparameter anlegen"));
+    m_actParams = aParams;
     aUpdate->setToolTip("Alle Features neu berechnen");
 
     // --- Ansicht und Navigation (Kuerzel wie in Inventor)
@@ -770,7 +810,7 @@ void MainWindow::buildRibbon()
     aBlock->setIcon(modifierIcon(QColor(210, 70, 60)));
 
     m_modelActions = {aZone, aEnforce, aBlock, aSketch, aExtrude, aRevolve, aHole, aSlice, m_previewAction, aSave,
-                      aSettings, aEvent, aPrintEnv, aMeasure, aUpdate, aExitPrint};
+                      aSettings, aEvent, aPrintEnv, aMeasure, aUpdate, aExitPrint, aParams};
     m_docActions = {aSketch, aExtrude, aRevolve, aHole, aPrintEnv, aMeasure, aUpdate, aHome, aFit, aPrev, aPan, aZoom, aOrbit,
                     aTop, aFront, aRight, aSlice, aSave, aEvent, aZone, aEnforce, aBlock, m_previewAction};
 
@@ -876,7 +916,7 @@ void MainWindow::buildRibbon()
                                      makePanel("Ändern", {aHole})});
     m_ribbon->addTab(m_modelTabPage, "3D-Modell");
     m_ribbon->addTab(makeRibbonPage({makePanel("Messen", {aMeasure})}), QString::fromUtf8("Prüfen"));
-    m_ribbon->addTab(makeRibbonPage({makePanel("Aktualisieren", {aUpdate})}), "Verwalten");
+    m_ribbon->addTab(makeRibbonPage({makePanel("Aktualisieren", {aUpdate}), makePanel("Parameter", {aParams})}), "Verwalten");
     m_ribbon->addTab(makeRibbonPage({makePanel("Darstellung", {m_styleShaded, m_styleEdges, m_styleWire, aPersp}),
                                      makePanel("Navigieren", {aPan, aZoom, aOrbit, aFit, aPrev, aHome}),
                                      makePanel("Ansichten", {aTop, aFront, aRight})}),
@@ -946,7 +986,7 @@ void MainWindow::buildFileMenu()
     auto* appLabel = new QLabel("<b>FormWerk</b>");
     appLabel->setStyleSheet("color: #26364d; padding-right: 8px;");
     qh->addWidget(appLabel);
-    for (QAction* a : {aHomePage, aNew, aOpen, aSave, m_undoAction, m_redoAction}) {
+    for (QAction* a : {aHomePage, aNew, aOpen, aSave, m_undoAction, m_redoAction, m_actParams}) {
         auto* b = new QToolButton;
         b->setDefaultAction(a);
         b->setIconSize(QSize(18, 18));
@@ -1169,8 +1209,10 @@ void MainWindow::rebuild(bool fit)
     else m_view->redraw();
 
     if (!ok) {
-        statusBar()->showMessage(QString::fromUtf8("Fehler in %1: %2")
-            .arg(QString::fromStdString(m_doc.errorFeature()->name()), QString::fromStdString(m_doc.errorMessage())), 8000);
+        statusBar()->showMessage(m_doc.errorFeature()
+            ? QString::fromUtf8("Fehler in %1: %2").arg(QString::fromStdString(m_doc.errorFeature()->name()),
+                                                       QString::fromStdString(m_doc.errorMessage()))
+            : QString::fromUtf8("Fehler: %1").arg(QString::fromStdString(m_doc.errorMessage())), 8000);
     }
 }
 
@@ -1632,12 +1674,8 @@ void MainWindow::beginFeatureEdit(const fw::FeaturePtr& f, bool isNew, const std
         const int dir = e->symmetric() ? 2 : (e->distance() < 0 ? 1 : 0);
         beh->addRow("Richtung", PropertyPanel::choiceRow(dirGroup,
             {{directionIcon(0), "Standard"}, {directionIcon(1), "Umgekehrt"}, {directionIcon(2), "Symmetrisch"}}, dir));
-        auto* dist = new QDoubleSpinBox;
-        dist->setRange(0.01, 10000);
-        dist->setDecimals(2);
-        dist->setSuffix(" mm");
-        dist->setValue(std::abs(e->distance()));
-        dist->setKeyboardTracking(false);
+        auto* dist = new ValueEdit("mm", evaluator());
+        dist->setExpression(QString::fromStdString(e->distanceRef().expr), std::abs(e->distance()));
         beh->addRow("Abstand A", dist);
         m_editDistance = dist;
         m_editDirGroup = dirGroup;
@@ -1652,13 +1690,14 @@ void MainWindow::beginFeatureEdit(const fw::FeaturePtr& f, bool isNew, const std
             if (auto s = sketchAt(profile->currentIndex())) e->setSketch(s);
             const int d = dirGroup->checkedId();
             e->setDistance(d == 1 ? -dist->value() : dist->value());
+            e->distanceRef().expr = dist->expression().toStdString();
             e->setSymmetric(d == 2);
             e->setOperation(static_cast<fw::BooleanOp>(opGroup->checkedId()));
             schedulePreview();
         };
         connect(profile, &QComboBox::currentIndexChanged, m_panel, apply);
         connect(dirGroup, &QButtonGroup::idClicked, m_panel, apply);
-        connect(dist, &QDoubleSpinBox::valueChanged, m_panel, apply);
+        connect(dist, &ValueEdit::valueEdited, m_panel, apply);
         connect(opGroup, &QButtonGroup::idClicked, m_panel, apply);
         m_panel->setMessage(QString::fromUtf8("Tipp: Pfeil im Grafikfenster ziehen, um den Abstand zu ändern."), false);
     } else if (auto r = std::dynamic_pointer_cast<fw::RevolveFeature>(f)) {
@@ -1676,12 +1715,9 @@ void MainWindow::beginFeatureEdit(const fw::FeaturePtr& f, bool isNew, const std
         const bool full = r->angle() >= 359.999;
         beh->addRow(QString::fromUtf8("Ausdehnung"), PropertyPanel::choiceRow(extentGroup,
             {{textIcon("360"), "Voll"}, {textIcon(QString::fromUtf8("∠")), "Winkel"}}, full ? 0 : 1));
-        auto* angle = new QDoubleSpinBox;
-        angle->setRange(0.1, 360);
-        angle->setSuffix(QString::fromUtf8(" °"));
-        angle->setValue(full ? 180.0 : r->angle());
+        auto* angle = new ValueEdit(QString::fromUtf8("°"), evaluator());
+        angle->setExpression(QString::fromStdString(r->angleRef().expr), full ? 180.0 : r->angle());
         angle->setEnabled(!full);
-        angle->setKeyboardTracking(false);
         beh->addRow("Winkel A", angle);
 
         auto* out = m_panel->addSection("Ausgabe");
@@ -1696,13 +1732,14 @@ void MainWindow::beginFeatureEdit(const fw::FeaturePtr& f, bool isNew, const std
             const bool full = extentGroup->checkedId() == 0;
             angle->setEnabled(!full);
             r->setAngle(full ? 360.0 : angle->value());
+            r->angleRef().expr = full ? std::string() : angle->expression().toStdString();
             r->setOperation(static_cast<fw::BooleanOp>(opGroup->checkedId()));
             schedulePreview();
         };
         connect(profile, &QComboBox::currentIndexChanged, m_panel, apply);
         connect(axis, &QComboBox::currentIndexChanged, m_panel, apply);
         connect(extentGroup, &QButtonGroup::idClicked, m_panel, apply);
-        connect(angle, &QDoubleSpinBox::valueChanged, m_panel, apply);
+        connect(angle, &ValueEdit::valueEdited, m_panel, apply);
         connect(opGroup, &QButtonGroup::idClicked, m_panel, apply);
     }
     m_panel->finish();
@@ -1809,12 +1846,14 @@ void MainWindow::dragArrow(const QPointF& start, const QPointF& now)
         const int want = value < 0 ? 1 : 0;
         if (m_editDirGroup->checkedId() != want) m_editDirGroup->button(want)->setChecked(true);
     }
-    m_editDistance->setValue(std::abs(value)); // loest apply + Vorschau aus
+    m_editDistance->setValue(std::abs(value), true); // loest apply + Vorschau aus
 }
 
 void MainWindow::endFeatureEdit(bool accept)
 {
     if (!m_editFeature) return;
+    if (accept)
+        if (auto* ve = qobject_cast<ValueEdit*>(QApplication::focusWidget())) ve->commit();
     m_previewTimer->stop();
     if (accept) {
         // Erst Vorschau aktualisieren, dann pruefen

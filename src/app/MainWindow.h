@@ -3,6 +3,7 @@
 #include "core/PartDocument.h"
 #include "slicer/Slicer.h"
 #include "app/SketchCanvas.h"
+#include "app/PropertyPanel.h"
 
 #include <AIS_Shape.hxx>
 
@@ -34,7 +35,6 @@ class QToolBar;
 class QListWidget;
 class QDockWidget;
 class PropertyPanel;
-class QDoubleSpinBox;
 class QButtonGroup;
 
 class MainWindow : public QMainWindow {
@@ -61,6 +61,8 @@ private:
     void showViewContextMenu(const QPoint& globalPos);
     void showSketchContextMenu(const QPoint& globalPos);
     void cmdMeasure();
+    void cmdParameters();
+    ValueEdit::Evaluator evaluator();
     void cmdCloseDoc();
     void displayModel();
     fw::SketchPtr defaultProfileSketch() const;
@@ -158,7 +160,7 @@ private:
     fw::FeaturePtr m_editFeature;
     bool m_editIsNew = false;
     std::string m_editBackup;
-    QDoubleSpinBox* m_editDistance = nullptr;
+    ValueEdit* m_editDistance = nullptr;
     QButtonGroup* m_editDirGroup = nullptr;
     Handle(AIS_Shape) m_arrowAis;
     gp_Pnt m_arrowBase;
@@ -175,6 +177,7 @@ private:
     QAction* m_styleWire = nullptr;
     // fuer die Markierungsmenues
     QAction* m_lastCommand = nullptr;
+    QAction* m_actParams = nullptr;
     QAction *m_actSketch = nullptr, *m_actExtrude = nullptr, *m_actRevolve = nullptr, *m_actHome = nullptr;
     QAction *m_actPrev = nullptr, *m_actFit = nullptr, *m_actPrintEnv = nullptr, *m_actExitPrint = nullptr;
     QAction *m_actMeasure = nullptr, *m_actUpdate = nullptr, *m_actSlice = nullptr, *m_actSaveGcode = nullptr;
