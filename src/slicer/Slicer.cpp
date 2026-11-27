@@ -227,6 +227,43 @@ SliceResult slice(const TopoDS_Shape& bodyIn, const PrinterProfile& pp)
         for (size_t i = 0; i < n; ++i)
             inner[i] = offset(region[i], -(pp.perimeters * w - pp.infillOverlap * w));
 
+        // --- Stuetzbereiche ----------------------------------------------------------
+        std::vector<Paths> support(n);
+        const auto mode = static_cast<SupportMode>(pp.supportMode);
+        if (mode != SupportMode::None && n > 1) {
+            const double allowed = pp.layerHeight * std::tan(pp.supportAngle * M_PI / 180.0);
+            // Ueberhang je Schicht: was nicht von der Schicht darunter (plus erlaubtem Versatz) getragen wird
+            std::vector<Paths> overhang(n);
+            for (size_t i = 1; i < n; ++i) {
+                Paths o = boolean(region[i], offset(region[i - 1], allowed), ClipperLib::ctDifference);
+                // Kleinstflaechen und Kanten-Artefakte entfernen
+                o = offset(offset(o, -w / 2), w / 2);
+                Paths big;
+                for (auto& p : o)
+                    if (std::abs(ClipperLib::Area(p)) / (kScale * kScale) >= pp.supportMinArea) big.push_back(p);
+                overhang[i] = big;
+            }
+            const size_t gap = static_cast<size_t>(std::max(0, pp.supportZGapLayers));
+            Paths carry;
+            std::vector<Paths> below(n);
+            for (size_t j = 1; j < n; ++j)
+                below[j] = boolean(below[j - 1], region[j - 1], ClipperLib::ctUnion);
+            for (size_t jj = n; jj-- > 0;) {
+                const size_t src = jj + 1 + gap;
+                if (src < n && !overhang[src].empty())
+                    carry = boolean(carry, overhang[src], ClipperLib::ctUnion);
+                if (carry.empty()) continue;
+                // Stuetze endet, wo sie auf dem Teil aufsetzt
+                carry = boolean(carry, region[jj], ClipperLib::ctDifference);
+                Paths s = boolean(carry, offset(region[jj], pp.supportXYDistance), ClipperLib::ctDifference);
+                if (mode == SupportMode::BuildPlateOnly) {
+                    s = boolean(s, below[jj], ClipperLib::ctDifference);
+                    carry = boolean(carry, below[jj], ClipperLib::ctDifference);
+                }
+                support[jj] = s;
+            }
+        }
+
         // --- Werkzeugwege je Schicht -------------------------------------------
         res.layers.resize(n);
         for (size_t i = 0; i < n; ++i) {
@@ -278,6 +315,13 @@ SliceResult slice(const TopoDS_Shape& bodyIn, const PrinterProfile& pp)
             }
         }
 
+        // --- Stuetzen fuellen (Linien in gleicher Richtung, damit sie sich stapeln)
+        for (size_t i = 0; i < n; ++i) {
+            if (support[i].empty()) continue;
+            for (auto& l : lineFill(support[i], w / std::max(0.05, pp.supportDensity), 0.0))
+                res.layers[i].paths.push_back({PathType::Support, std::move(l), false});
+        }
+
         // --- Hoehen-Ereignisse den Schichten zuordnen ------------------------------
         {
             std::vector<HeightEvent> events = pp.events;
@@ -324,8 +368,8 @@ SliceResult slice(const TopoDS_Shape& bodyIn, const PrinterProfile& pp)
             std::vector<ToolPath> ordered;
             Vec2 pos{g.x(), g.y()};
             const std::vector<PathType> order = pp.outerWallFirst
-                ? std::vector<PathType>{PathType::Skirt, PathType::Brim, PathType::OuterWall, PathType::InnerWall, PathType::Solid, PathType::Infill}
-                : std::vector<PathType>{PathType::Skirt, PathType::Brim, PathType::InnerWall, PathType::OuterWall, PathType::Solid, PathType::Infill};
+                ? std::vector<PathType>{PathType::Skirt, PathType::Brim, PathType::OuterWall, PathType::InnerWall, PathType::Solid, PathType::Infill, PathType::Support}
+                : std::vector<PathType>{PathType::Skirt, PathType::Brim, PathType::InnerWall, PathType::OuterWall, PathType::Solid, PathType::Infill, PathType::Support};
             const bool rear = static_cast<SeamPosition>(pp.seamPosition) == SeamPosition::Rear;
             for (PathType t : order) {
                 const bool isWall = t == PathType::OuterWall || t == PathType::InnerWall;
@@ -358,7 +402,7 @@ SliceResult slice(const TopoDS_Shape& bodyIn, const PrinterProfile& pp)
             bool firstPath = true;
             for (const auto& tp : L.paths) {
                 if (firstPath || tp.type != current) {
-                    static const char* names[] = {"SKIRT", "WALL-OUTER", "WALL-INNER", "SKIN", "FILL", "SKIRT"};
+                    static const char* names[] = {"SKIRT", "WALL-OUTER", "WALL-INNER", "SKIN", "FILL", "SKIRT", "SUPPORT"};
                     g.comment(std::string("TYPE:") + names[static_cast<int>(tp.type)]);
                     current = tp.type;
                     firstPath = false;
@@ -370,6 +414,7 @@ SliceResult slice(const TopoDS_Shape& bodyIn, const PrinterProfile& pp)
                 case PathType::Solid: speed = pp.topBottomSpeed; break;
                 case PathType::Skirt: case PathType::Brim: speed = pp.firstLayerSpeed; break;
                 case PathType::Infill: speed = pp.printSpeed; break;
+                case PathType::Support: speed = pp.supportSpeed; break;
                 }
                 if (i == 0) speed = std::min(speed, pp.firstLayerSpeed);
 

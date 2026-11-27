@@ -28,6 +28,7 @@ struct HeightEvent {
 
 enum class InfillPattern { Lines, Grid };
 enum class SeamPosition { Nearest, Rear };
+enum class SupportMode { None, Everywhere, BuildPlateOnly };
 
 // Drucker- und Druckeinstellungen. Standardwerte: Creality Ender 3 V2
 // (Marlin, Bowden-Extruder, 0,4-mm-Duese) mit PLA.
@@ -114,6 +115,15 @@ struct PrinterProfile {
     int skirtLoops = 2;
     double skirtDistance = 5.0;
     double brimWidth = 0.0;
+
+    // Stuetzen
+    int supportMode = static_cast<int>(SupportMode::None);
+    double supportAngle = 50.0;        // Grad von der Senkrechten
+    double supportDensity = 0.15;      // 0..1
+    double supportXYDistance = 0.8;    // mm
+    int supportZGapLayers = 1;
+    double supportSpeed = 50.0;
+    double supportMinArea = 1.0;       // mm2
 
     // Pause / Filamentwechsel
     double pauseParkX = 0.0, pauseParkY = 200.0, pauseLiftZ = 10.0;

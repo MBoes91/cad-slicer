@@ -26,6 +26,7 @@ Technik: C++17, Qt 6 (Oberfläche), OpenCascade (CAD-Kernel), Clipper (2D-Polygo
 - Druckprofile: 4 mitgelieferte (PLA Standard/Fein/Schnell, PETG), eigene speichern, importieren, exportieren (`.fwprofile`)
 - Höhen-Ereignisse: Pause (Kopf parken, M0), Filamentwechsel (M600), Düsen-/Betttemperatur, Lüfter,
   Geschwindigkeit, Fluss oder eigener G-Code ab einer Höhe; direkt aus der Schichtvorschau einfügbar
+- Automatische Stützen (überall oder nur vom Druckbett) mit Überhangwinkel, Dichte und Abständen
 - Brim, Gitter- oder Linien-Füllung, Z-Naht hinten, eigene Temperaturen für die erste Schicht
 - Schätzung von Druckzeit, Filamentlänge, Gewicht und Kosten
 - Farbige Schichtvorschau auf dem Druckbett, Druckzeit- und Filamentschätzung
@@ -40,7 +41,7 @@ Technik: C++17, Qt 6 (Oberfläche), OpenCascade (CAD-Kernel), Clipper (2D-Polygo
 1. Echter Skizzen-Modus: Linien, Bögen, Abhängigkeiten (horizontal, vertikal, parallel, koinzident) mit Solver
 2. Skizzen auf Bauteilflächen, Bohrung, Fase/Rundung
 3. Speichern/Laden im eigenen Dateiformat
-4. Slicer: automatische Stützen, danach Modifikator-Körper (Infill-Zonen, Stützen erzwingen/sperren)
+4. Slicer: Modifikator-Körper (Infill-Zonen, Stützen erzwingen/sperren), Baumstützen
 
 ## Programm unter Windows 10 holen
 

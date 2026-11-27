@@ -145,8 +145,47 @@ static void testProfilesAndEvents()
     CHECK(r.filamentGrams > 0.5 && r.filamentCost > 0);
 }
 
+static void testSupports()
+{
+    // Saeule 10x10x20 mit auskragender Platte 40x10x2 oben
+    fw::PartDocument doc;
+    auto sk = std::make_shared<fw::Sketch>("Skizze1", fw::SketchPlane::XY);
+    sk->rectangles().push_back({15, 0, 10, 10});
+    doc.addFeature(sk);
+    doc.addFeature(std::make_shared<fw::ExtrudeFeature>("Extrusion1", sk, 20.0));
+    auto sk2 = std::make_shared<fw::Sketch>("Skizze2", fw::SketchPlane::XY, 18.0);
+    sk2->rectangles().push_back({0, 0, 40, 10});
+    doc.addFeature(sk2);
+    doc.addFeature(std::make_shared<fw::ExtrudeFeature>("Extrusion2", sk2, 4.0));
+    CHECK(doc.recompute());
+
+    fw::PrinterProfile p;
+    auto countSupport = [](const fw::SliceResult& r, size_t layer) {
+        int c = 0;
+        for (const auto& tp : r.layers.at(layer).paths) c += tp.type == fw::PathType::Support;
+        return c;
+    };
+    fw::SliceResult none = fw::slice(doc.body(), p);
+    CHECK(none.ok && countSupport(none, 10) == 0);
+
+    p.supportMode = static_cast<int>(fw::SupportMode::Everywhere);
+    fw::SliceResult r = fw::slice(doc.body(), p);
+    CHECK(r.ok);
+    CHECK(countSupport(r, 0) > 0);
+    CHECK(countSupport(r, 50) > 0);
+    CHECK(countSupport(r, 88) > 0);
+    CHECK(countSupport(r, 89) == 0); // Abstandsschicht unter der Platte (Platte ab Schicht 90)
+    CHECK(countSupport(r, 95) == 0); // in der Platte selbst
+    CHECK(r.gcode.find(";TYPE:SUPPORT") != std::string::npos);
+    // Stuetzen nie innerhalb der Saeule (Bettmitte 110/110, Saeule x 105..115)
+    for (const auto& tp : r.layers[50].paths)
+        if (tp.type == fw::PathType::Support)
+            for (const auto& v : tp.points) CHECK(v.x < 105.0 - 0.5 || v.x > 115.0 + 0.5);
+}
+
 int main()
 {
+    testSupports();
     testProfilesAndEvents();
     testExtrudeWithHole();
     testRevolve();

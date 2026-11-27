@@ -10,7 +10,7 @@
 
 namespace fw {
 
-enum class PathType { Skirt, OuterWall, InnerWall, Solid, Infill, Brim };
+enum class PathType { Skirt, OuterWall, InnerWall, Solid, Infill, Brim, Support };
 
 struct ToolPath {
     PathType type;
