@@ -62,7 +62,7 @@ OcctView::OcctView(QWidget* parent) : QWidget(parent)
     setMinimumSize(400, 300);
 
     // Mausbelegung
-    AIS_MouseGestureMap& g = ChangeMouseGestureMap();
+    auto& g = ChangeMouseGestureMap(); // Typname unterscheidet sich zwischen OCCT 7 und 8
     g.Clear();
     g.Bind(Aspect_VKeyMouse_MiddleButton, AIS_MouseGesture_Pan);
     g.Bind(Aspect_VKeyMouse_MiddleButton | Aspect_VKeyFlags_SHIFT, AIS_MouseGesture_RotateOrbit);
