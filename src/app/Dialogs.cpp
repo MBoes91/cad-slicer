@@ -90,69 +90,6 @@ fw::SketchPlane NewSketchDialog::plane() const
 double NewSketchDialog::offset() const { return m_offset->value(); }
 
 // ---------------------------------------------------------------------------
-SketchEditDialog::SketchEditDialog(const fw::Sketch& sketch, QWidget* parent) : QDialog(parent)
-{
-    setWindowTitle(QString("Skizze bearbeiten: %1").arg(QString::fromStdString(sketch.name())));
-    resize(620, 360);
-    m_table = new QTableWidget(0, 5);
-    m_table->setHorizontalHeaderLabels({"Element", "X / Mitte X", "Y / Mitte Y", "Breite / Radius", "Höhe"});
-    m_table->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
-
-    for (const auto& r : sketch.rectangles()) addRow("Rechteck", r.x, r.y, r.width, r.height);
-    for (const auto& c : sketch.circles()) addRow("Kreis", c.cx, c.cy, c.radius, 0);
-
-    auto* addRect = new QPushButton("Rechteck hinzufügen");
-    auto* addCircle = new QPushButton("Kreis hinzufügen");
-    auto* remove = new QPushButton("Entfernen");
-    connect(addRect, &QPushButton::clicked, this, [this] { addRow("Rechteck", 0, 0, 20, 10); });
-    connect(addCircle, &QPushButton::clicked, this, [this] { addRow("Kreis", 0, 0, 5, 0); });
-    connect(remove, &QPushButton::clicked, this, [this] {
-        if (m_table->currentRow() >= 0) m_table->removeRow(m_table->currentRow());
-    });
-
-    auto* buttons = new QHBoxLayout;
-    buttons->addWidget(addRect);
-    buttons->addWidget(addCircle);
-    buttons->addWidget(remove);
-    buttons->addStretch();
-
-    auto* lay = new QVBoxLayout(this);
-    lay->addWidget(m_table);
-    lay->addLayout(buttons);
-    lay->addWidget(okCancel(this));
-}
-
-void SketchEditDialog::addRow(const QString& type, double a, double b, double c, double d)
-{
-    const int row = m_table->rowCount();
-    m_table->insertRow(row);
-    auto* item = new QTableWidgetItem(type);
-    item->setFlags(item->flags() & ~Qt::ItemIsEditable);
-    m_table->setItem(row, 0, item);
-    const bool circle = type == "Kreis";
-    const double vals[4] = {a, b, c, d};
-    for (int col = 1; col <= 4; ++col) {
-        auto* box = mmBox(-1000, 1000, vals[col - 1]);
-        if (col >= 3) box->setMinimum(0.01);
-        if (circle && col == 4) box->setEnabled(false);
-        m_table->setCellWidget(row, col, box);
-    }
-}
-
-void SketchEditDialog::applyTo(fw::Sketch& sketch) const
-{
-    sketch.rectangles().clear();
-    sketch.circles().clear();
-    for (int row = 0; row < m_table->rowCount(); ++row) {
-        auto v = [&](int col) { return static_cast<QDoubleSpinBox*>(m_table->cellWidget(row, col))->value(); };
-        if (m_table->item(row, 0)->text() == "Kreis")
-            sketch.circles().push_back({v(1), v(2), v(3)});
-        else
-            sketch.rectangles().push_back({v(1), v(2), v(3), v(4)});
-    }
-}
-
-// ---------------------------------------------------------------------------
 ExtrudeDialog::ExtrudeDialog(const std::vector<fw::SketchPtr>& sketches, QWidget* parent)
     : QDialog(parent), m_sketches(sketches)
 {

@@ -143,10 +143,15 @@ std::string PartDocument::toText() const
         if (auto s = std::dynamic_pointer_cast<Sketch>(f)) {
             o << "sketch = " << safeName(s->name()) << ";plane=" << static_cast<int>(s->planeType())
               << ";offset=" << s->offset() << ";suppressed=" << sup << '\n';
-            for (const auto& r : s->rectangles())
-                o << "rect = " << r.x << ';' << r.y << ';' << r.width << ';' << r.height << '\n';
-            for (const auto& c : s->circles())
-                o << "circle = " << c.cx << ';' << c.cy << ';' << c.radius << '\n';
+            const auto& g = s->geometry();
+            for (size_t i = 1; i < g.points.size(); ++i)
+                o << "pt = " << g.points[i].x << ';' << g.points[i].y << '\n';
+            for (const auto& e : g.entities)
+                o << "ent = " << static_cast<int>(e.type) << ';' << e.p0 << ';' << e.p1 << ';' << e.p2 << ';'
+                  << e.r << ';' << (e.construction ? 1 : 0) << '\n';
+            for (const auto& c : g.constraints)
+                o << "con = " << static_cast<int>(c.type) << ';' << c.a << ';' << c.b << ';' << c.value << ';'
+                  << c.value2 << ';' << (c.driving ? 1 : 0) << ';' << c.labelX << ';' << c.labelY << '\n';
         } else if (auto e = std::dynamic_pointer_cast<ExtrudeFeature>(f)) {
             o << "extrude = " << safeName(e->name()) << ";sketch=" << safeName(e->sketch()->name())
               << ";distance=" << e->distance() << ";op=" << static_cast<int>(e->operation())
@@ -191,14 +196,36 @@ bool PartDocument::fromText(const std::string& text, std::string* error)
                 current->setSuppressed(a.count("suppressed") && a.at("suppressed") == "1");
                 sketchesByName[current->name()] = current;
                 features.push_back(current);
-            } else if (key == "rect" || key == "circle") {
+            } else if (key == "rect" || key == "circle" || key == "pt" || key == "ent" || key == "con") {
                 if (!current) throw std::invalid_argument("Element ohne Skizze");
-                if (key == "rect" && parts.size() >= 4)
-                    current->rectangles().push_back({num(parts[0]), num(parts[1]), num(parts[2]), num(parts[3])});
-                else if (key == "circle" && parts.size() >= 3)
-                    current->circles().push_back({num(parts[0]), num(parts[1]), num(parts[2])});
-                else
+                auto& g = current->geometry();
+                auto idx = [&](size_t i) { return static_cast<int>(num(parts.at(i))); };
+                if (key == "pt") {
+                    g.addPoint(num(parts.at(0)), num(parts.at(1)));
+                } else if (key == "ent") {
+                    SkEntity e;
+                    e.type = static_cast<SkType>(idx(0));
+                    e.p0 = idx(1); e.p1 = idx(2); e.p2 = idx(3);
+                    e.r = num(parts.at(4));
+                    e.construction = idx(5) != 0;
+                    for (int pi : {e.p0, e.p1, e.p2})
+                        if (pi >= static_cast<int>(g.points.size())) throw std::invalid_argument("Punktindex ungültig");
+                    g.entities.push_back(e);
+                } else if (key == "con") {
+                    SkConstraint c;
+                    c.type = static_cast<ConType>(idx(0));
+                    c.a = idx(1); c.b = idx(2);
+                    c.value = num(parts.at(3)); c.value2 = num(parts.at(4));
+                    c.driving = idx(5) != 0;
+                    c.labelX = num(parts.at(6)); c.labelY = num(parts.at(7));
+                    g.constraints.push_back(c);
+                } else if (key == "rect" && parts.size() >= 4) {   // Format der Version 0.1
+                    current->addRectangle(num(parts[0]), num(parts[1]), num(parts[2]), num(parts[3]));
+                } else if (key == "circle" && parts.size() >= 3) {
+                    current->addCircle(num(parts[0]), num(parts[1]), num(parts[2]));
+                } else {
                     throw std::invalid_argument("Unvollständiges Element");
+                }
             } else if (key == "extrude" || key == "revolve") {
                 const auto a = attrs(parts);
                 auto it = sketchesByName.find(need(a, "sketch"));

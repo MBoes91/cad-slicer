@@ -25,8 +25,8 @@ static void testExtrudeWithHole()
 {
     fw::PartDocument doc;
     auto sk = std::make_shared<fw::Sketch>("Skizze1", fw::SketchPlane::XY);
-    sk->rectangles().push_back({0, 0, 40, 30});
-    sk->circles().push_back({20, 15, 5});
+    sk->addRectangle(0, 0, 40, 30);
+    sk->addCircle(20, 15, 5);
     doc.addFeature(sk);
     auto ex = std::make_shared<fw::ExtrudeFeature>("Extrusion1", sk, 10.0);
     doc.addFeature(ex);
@@ -41,7 +41,7 @@ static void testExtrudeWithHole()
 
     // Differenz-Extrusion von oben
     auto sk2 = std::make_shared<fw::Sketch>("Skizze2", fw::SketchPlane::XY, 20.0);
-    sk2->rectangles().push_back({0, 0, 10, 30});
+    sk2->addRectangle(0, 0, 10, 30);
     doc.addFeature(sk2);
     doc.addFeature(std::make_shared<fw::ExtrudeFeature>("Extrusion2", sk2, -5.0, fw::BooleanOp::Cut));
     CHECK(doc.recompute());
@@ -53,7 +53,7 @@ static void testRevolve()
 {
     fw::PartDocument doc;
     auto sk = std::make_shared<fw::Sketch>("Skizze1", fw::SketchPlane::XZ);
-    sk->rectangles().push_back({0, 0, 10, 20}); // Zylinder r=10, h=20 um Skizzen-Y (Welt-Z)
+    sk->addRectangle(0, 0, 10, 20); // Zylinder r=10, h=20 um Skizzen-Y (Welt-Z)
     doc.addFeature(sk);
     doc.addFeature(std::make_shared<fw::RevolveFeature>("Drehung1", sk, fw::RevolveAxis::SketchY));
     CHECK(doc.recompute());
@@ -64,8 +64,8 @@ static void testSlice()
 {
     fw::PartDocument doc;
     auto sk = std::make_shared<fw::Sketch>("Skizze1", fw::SketchPlane::XY);
-    sk->rectangles().push_back({0, 0, 20, 20});
-    sk->circles().push_back({10, 10, 4});
+    sk->addRectangle(0, 0, 20, 20);
+    sk->addCircle(10, 10, 4);
     doc.addFeature(sk);
     doc.addFeature(std::make_shared<fw::ExtrudeFeature>("Extrusion1", sk, 5.0));
     CHECK(doc.recompute());
@@ -97,7 +97,11 @@ static void testSlice()
     CHECK(minX > 110 - 10 - 7 && maxX < 110 + 10 + 7);
 
     // Zu grosses Teil wird abgelehnt
-    sk->rectangles()[0].width = 300;
+    {
+        auto& g = sk->geometry();
+        for (auto& c : g.constraints) if (c.type == fw::ConType::DistanceX) c.value = 300;
+        CHECK(g.solve().status == fw::SolveStatus::Ok);
+    }
     CHECK(doc.recompute());
     CHECK(!fw::slice(doc.body(), pp).ok);
 }
@@ -121,7 +125,7 @@ static void testProfilesAndEvents()
     // Slicen mit Ereignissen, Brim und Gitter-Fuellung
     fw::PartDocument doc;
     auto sk = std::make_shared<fw::Sketch>("Skizze1", fw::SketchPlane::XY);
-    sk->rectangles().push_back({0, 0, 20, 20});
+    sk->addRectangle(0, 0, 20, 20);
     doc.addFeature(sk);
     doc.addFeature(std::make_shared<fw::ExtrudeFeature>("Extrusion1", sk, 5.0));
     CHECK(doc.recompute());
@@ -150,11 +154,11 @@ static void testSupports()
     // Saeule 10x10x20 mit auskragender Platte 40x10x2 oben
     fw::PartDocument doc;
     auto sk = std::make_shared<fw::Sketch>("Skizze1", fw::SketchPlane::XY);
-    sk->rectangles().push_back({15, 0, 10, 10});
+    sk->addRectangle(15, 0, 10, 10);
     doc.addFeature(sk);
     doc.addFeature(std::make_shared<fw::ExtrudeFeature>("Extrusion1", sk, 20.0));
     auto sk2 = std::make_shared<fw::Sketch>("Skizze2", fw::SketchPlane::XY, 18.0);
-    sk2->rectangles().push_back({0, 0, 40, 10});
+    sk2->addRectangle(0, 0, 40, 10);
     doc.addFeature(sk2);
     doc.addFeature(std::make_shared<fw::ExtrudeFeature>("Extrusion2", sk2, 4.0));
     CHECK(doc.recompute());
@@ -187,8 +191,8 @@ static void testFileRoundtrip()
 {
     fw::PartDocument doc("Halter");
     auto sk = std::make_shared<fw::Sketch>("Skizze1", fw::SketchPlane::XZ, 2.5);
-    sk->rectangles().push_back({0, 0, 10.25, 20});
-    sk->circles().push_back({5, 5, 1.5});
+    sk->addRectangle(0, 0, 10.25, 20);
+    sk->addCircle(5, 5, 1.5);
     doc.addFeature(sk);
     auto ex = std::make_shared<fw::ExtrudeFeature>("Extrusion1", sk, -7.5, fw::BooleanOp::Join, true);
     ex->setSuppressed(true);
@@ -211,7 +215,7 @@ static void testCancel()
 {
     fw::PartDocument doc;
     auto sk = std::make_shared<fw::Sketch>("Skizze1", fw::SketchPlane::XY);
-    sk->rectangles().push_back({0, 0, 20, 20});
+    sk->addRectangle(0, 0, 20, 20);
     doc.addFeature(sk);
     doc.addFeature(std::make_shared<fw::ExtrudeFeature>("Extrusion1", sk, 5.0));
     CHECK(doc.recompute());
@@ -220,8 +224,69 @@ static void testCancel()
     CHECK(!r.ok && r.cancelled);
 }
 
+static void testSketchSolver()
+{
+    using namespace fw;
+    // Rechteck: Masse aendern -> Geometrie folgt
+    Sketch sk("Skizze1", SketchPlane::XY);
+    RectangleRefs r = sk.addRectangle(0, 0, 20, 10);
+    auto& g = sk.geometry();
+    CHECK(g.solve().status == SolveStatus::Ok);
+    CHECK(g.degreesOfFreedom() == 2); // nur noch Lage frei
+    // linke untere Ecke auf den Ursprung -> vollstaendig bestimmt
+    const int p0 = g.entities[r.lines[0]].p0;
+    CHECK(g.canAdd({ConType::Coincident, 0, p0}));
+    g.addConstraint({ConType::Coincident, 0, p0});
+    SolveResult res = g.solve();
+    CHECK(res.status == SolveStatus::Ok && res.dof == 0);
+    g.constraints[r.widthDim].value = 35;
+    CHECK(g.solve().status == SolveStatus::Ok);
+    const int p2 = g.entities[r.lines[1]].p1;
+    CHECK(std::abs(g.points[p2].x - 35) < 1e-6 && std::abs(g.points[p2].y - 10) < 1e-6);
+    // Redundant: weitere Horizontal-Bedingung auf schon waagrechter Linie
+    CHECK(!g.canAdd({ConType::Horizontal, r.lines[0]}));
+    // Ziehen eines voll bestimmten Punktes aendert nichts
+    g.drag(p2, 50, 50);
+    CHECK(std::abs(g.points[p2].x - 35) < 1e-6);
+
+    // Langloch: zwei Linien + zwei Boegen, Breite 10, Mittenabstand 30
+    Sketch slot("Skizze2", SketchPlane::XY);
+    auto& s = slot.geometry();
+    const int c1 = s.addPoint(0, 0), c2 = s.addPoint(30, 0);
+    const int a = s.addPoint(0, -5), b = s.addPoint(30, -5), c = s.addPoint(30, 5), d = s.addPoint(0, 5);
+    const int l1 = s.addLine(a, b), l2 = s.addLine(c, d);
+    s.addArc(c2, b, c);
+    s.addArc(c1, d, a);
+    s.addConstraint({ConType::Horizontal, l1});
+    s.addConstraint({ConType::Horizontal, l2});
+    CHECK(s.solve().status == SolveStatus::Ok);
+    PartDocument doc;
+    auto sp = std::make_shared<Sketch>(slot);
+    doc.addFeature(sp);
+    doc.addFeature(std::make_shared<ExtrudeFeature>("Extrusion1", sp, 2.0));
+    CHECK(doc.recompute());
+    const double expected = (30 * 10 + M_PI * 25) * 2;
+    CHECK(std::abs(volume(doc.body()) - expected) < 0.5);
+
+    // Datei-Rundweg mit Abhaengigkeiten
+    const std::string text = doc.toText();
+    PartDocument copy;
+    CHECK(copy.fromText(text));
+    CHECK(copy.toText() == text);
+    CHECK(copy.recompute() && std::abs(volume(copy.body()) - expected) < 0.5);
+
+    // Offene Kontur -> verstaendlicher Fehler
+    Sketch open("Skizze3", SketchPlane::XY);
+    auto& o = open.geometry();
+    o.addLine(o.addPoint(0, 0), o.addPoint(10, 0));
+    bool threw = false;
+    try { open.profile(); } catch (const std::exception&) { threw = true; }
+    CHECK(threw);
+}
+
 int main()
 {
+    testSketchSolver();
     testFileRoundtrip();
     testCancel();
     testSupports();

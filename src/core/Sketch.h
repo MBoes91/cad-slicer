@@ -1,28 +1,20 @@
 #pragma once
 
 #include "core/Feature.h"
+#include "core/SketchGeometry.h"
 
 #include <gp_Ax3.hxx>
-
-#include <vector>
 
 namespace fw {
 
 enum class SketchPlane { XY, XZ, YZ };
 
-struct SketchRect {
-    double x = 0, y = 0;      // linke untere Ecke in Skizzenkoordinaten
-    double width = 10, height = 10;
+struct RectangleRefs {
+    int lines[4];
+    int widthDim, heightDim;
 };
 
-struct SketchCircle {
-    double cx = 0, cy = 0;
-    double radius = 5;
-};
-
-// Vorlaeufige 2D-Skizze. Die Elemente sind direkt ueber ihre Masse definiert
-// (das sind die "Bemassungen"). Ein allgemeiner Abhaengigkeits-Solver fuer
-// Linien, Boegen und Bedingungen wie parallel/koinzident folgt im naechsten Schritt.
+// 2D-Skizze auf einer Ursprungsebene: Geometrie, Abhaengigkeiten, Bemassungen.
 class Sketch : public Feature {
 public:
     Sketch(std::string name, SketchPlane plane, double offset = 0.0);
@@ -32,17 +24,20 @@ public:
 
     SketchPlane planeType() const { return m_planeType; }
     double offset() const { return m_offset; }
+    void setOffset(double o) { m_offset = o; }
     gp_Ax3 plane() const;
 
-    std::vector<SketchRect>& rectangles() { return m_rects; }
-    const std::vector<SketchRect>& rectangles() const { return m_rects; }
-    std::vector<SketchCircle>& circles() { return m_circles; }
-    const std::vector<SketchCircle>& circles() const { return m_circles; }
+    SketchGeometry& geometry() { return m_geo; }
+    const SketchGeometry& geometry() const { return m_geo; }
 
-    bool isEmpty() const { return m_rects.empty() && m_circles.empty(); }
+    // Bequeme Helfer: Rechteck (achsparallel, bemasst) und Kreis (bemasst)
+    RectangleRefs addRectangle(double x, double y, double w, double h);
+    int addCircle(double cx, double cy, double r); // liefert Index der Durchmesser-Bemassung
 
-    // Geschlossene Profilflaechen der Skizze. Kreise, die vollstaendig in einem
-    // Rechteck liegen, werden als Loecher ausgespart.
+    bool isEmpty() const;
+
+    // Geschlossene Profilflaechen (Konstruktionslinien zaehlen nicht).
+    // Ineinanderliegende Konturen werden abwechselnd als Material und Loch gewertet.
     TopoDS_Shape profile() const;
 
     // Kanten der Skizze zur Anzeige im 3D-Fenster.
@@ -51,8 +46,7 @@ public:
 private:
     SketchPlane m_planeType;
     double m_offset;
-    std::vector<SketchRect> m_rects;
-    std::vector<SketchCircle> m_circles;
+    SketchGeometry m_geo;
 };
 
 using SketchPtr = std::shared_ptr<Sketch>;

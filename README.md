@@ -6,6 +6,7 @@ mit integriertem Slicer für den **Creality Ender 3 V2** (220 × 220 × 250 mm, 
 Technik: C++17, Qt 6 (Oberfläche), OpenCascade (CAD-Kernel), Clipper (2D-Polygone im Slicer).
 
 ![Modell](docs/modell.png)
+![Skizze](docs/skizze.png)
 ![Druckvorschau](docs/druckvorschau.png)
 
 ## Stand (Version 0.1)
@@ -18,7 +19,11 @@ Technik: C++17, Qt 6 (Oberfläche), OpenCascade (CAD-Kernel), Clipper (2D-Polygo
 **Modellieren**
 - Multifunktionsleiste mit den Registern *3D-Modell*, *Ansicht* und *3D-Druck*
 - Modellbrowser mit Feature-Baum: Doppelklick bearbeitet, Rechtsklick bietet Unterdrücken und Löschen
-- 2D-Skizzen auf XY-, XZ- oder YZ-Ebene (mit Abstand), Elemente: Rechteck, Kreis, über Maße bearbeitbar
+- **Skizzenmodus**: Linie (Linienzug), Rechteck, Kreis, Bogen mit der Maus zeichnen, Fangen an vorhandenen Punkten,
+  automatische Horizontal-/Vertikal-Abhängigkeiten, Punkte ziehen, Konstruktionsgeometrie
+- **Abhängigkeiten**: koinzident, horizontal, vertikal, parallel, senkrecht, tangential, gleich, fixiert, Mittelpunkt, Punkt auf Objekt
+- **Bemaßungen**: Länge, Abstand (horizontal/vertikal/ausgerichtet), Durchmesser, Radius, Winkel; Doppelklick ändert den Wert,
+  getriebene Bemaßungen bei Überbestimmung, Anzeige der offenen Freiheitsgrade („Vollständig bestimmt")
 - Extrusion (Verbinden, Differenz, Schnittmenge, symmetrisch), Drehung um eine Skizzenachse
 - Parametrische Neuberechnung: Maß ändern, Modell baut sich neu auf
 - ViewCube, Ausgangsansicht (F6), Standardansichten, STL-Export
@@ -37,14 +42,14 @@ Technik: C++17, Qt 6 (Oberfläche), OpenCascade (CAD-Kernel), Clipper (2D-Polygo
 - Farbige Schichtvorschau auf dem Druckbett, Druckzeit- und Filamentschätzung
 - G-Code mit `;LAYER:` / `;TYPE:`-Kommentaren (kompatibel mit gängigen G-Code-Viewern)
 
-**Tastenkürzel:** Strg+N/O/S Datei · Strg+Z/Y Rückgängig/Wiederholen · S Skizze · E Extrusion · R Drehung · F6 Ausgangsansicht · Strg+R Slicen · Strg+G G-Code speichern
+**Tastenkürzel:** Strg+N/O/S Datei · Strg+Z/Y Rückgängig/Wiederholen · S Skizze (darin: L Linie, R Rechteck, C Kreis, A Bogen, D Bemaßung, Esc Auswählen) · E Extrusion · R Drehung · F6 Ausgangsansicht · Strg+R Slicen · Strg+G G-Code speichern
 
 **Maus:** Rad = Zoom · Mittlere Taste = Verschieben · Umschalt+Mitte oder Rechts = Drehen
 
 ## Nächste Schritte
 
-1. Interaktiver Skizzen-Modus: Linien, Bögen, Abhängigkeiten (horizontal, vertikal, parallel, koinzident) mit Solver
-2. Skizzen auf Bauteilflächen, Bohrung, Fase/Rundung
+1. Skizzen auf Bauteilflächen, Bohrung, Fase/Rundung, Muster, Spiegeln
+2. Parameter-Tabelle mit Formeln
 3. STEP-Import/-Export, STL-Import
 4. Slicer: Modifikator-Körper (Infill-Zonen, Stützen erzwingen/sperren), Baumstützen
 

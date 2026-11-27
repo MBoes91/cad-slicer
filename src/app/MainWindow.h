@@ -27,6 +27,8 @@ class QProgressBar;
 class QPushButton;
 class QMenu;
 class QTimer;
+class QStackedWidget;
+class SketchCanvas;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -48,6 +50,8 @@ private:
 
     // Befehle
     void cmdNewSketch();
+    void enterSketch(const fw::SketchPtr& sketch, bool isNew);
+    void finishSketch(bool accept);
     void cmdExtrude();
     void cmdRevolve();
     void cmdEditFeature(const fw::FeaturePtr& f);
@@ -89,6 +93,12 @@ private:
     fw::SliceResult m_slice;
 
     OcctView* m_view = nullptr;
+    SketchCanvas* m_canvas = nullptr;
+    QStackedWidget* m_stack = nullptr;
+    fw::SketchPtr m_editSketch;
+    bool m_editSketchIsNew = false;
+    std::vector<QAction*> m_modelActions;
+    std::vector<QAction*> m_sketchToolActions;
     QTabWidget* m_ribbon = nullptr;
     QTreeWidget* m_browser = nullptr;
     QSlider* m_layerSlider = nullptr;

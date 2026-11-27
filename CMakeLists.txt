@@ -28,6 +28,7 @@ set(OCC_CORE_LIBS TKernel TKMath TKG2d TKG3d TKGeomBase TKBRep TKGeomAlgo
 # --- Kern: parametrisches Bauteil, Skizzen, Features -------------------------
 add_library(formwerk_core STATIC
   src/core/Sketch.cpp
+  src/core/SketchGeometry.cpp
   src/core/Features.cpp
   src/core/PartDocument.cpp)
 target_include_directories(formwerk_core PUBLIC src ${OpenCASCADE_INCLUDE_DIR})
@@ -51,7 +52,8 @@ if(FORMWERK_BUILD_APP)
     src/app/MainWindow.cpp
     src/app/OcctView.cpp
     src/app/Dialogs.cpp
-    src/app/ToolpathPreview.cpp)
+    src/app/ToolpathPreview.cpp
+    src/app/SketchCanvas.cpp)
   target_link_libraries(formwerk PRIVATE formwerk_slicer Qt6::Widgets Qt6::Concurrent TKService TKV3d TKOpenGl)
 endif()
 

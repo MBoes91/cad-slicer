@@ -26,17 +26,6 @@ private:
     QDoubleSpinBox* m_offset;
 };
 
-// Skizzenelemente mit ihren Bemassungen bearbeiten
-class SketchEditDialog : public QDialog {
-    Q_OBJECT
-public:
-    SketchEditDialog(const fw::Sketch& sketch, QWidget* parent = nullptr);
-    void applyTo(fw::Sketch& sketch) const;
-private:
-    void addRow(const QString& type, double a, double b, double c, double d);
-    QTableWidget* m_table;
-};
-
 // Extrusion anlegen/bearbeiten
 class ExtrudeDialog : public QDialog {
     Q_OBJECT

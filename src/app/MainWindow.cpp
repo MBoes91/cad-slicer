@@ -2,6 +2,7 @@
 
 #include "app/Dialogs.h"
 #include "app/OcctView.h"
+#include "app/SketchCanvas.h"
 #include "app/ToolpathPreview.h"
 #include "slicer/Settings.h"
 
@@ -27,6 +28,8 @@
 #include <QPushButton>
 #include <QStyle>
 #include <QtConcurrent/QtConcurrentRun>
+#include <QActionGroup>
+#include <QStackedWidget>
 #include <QSettings>
 #include <QSlider>
 #include <QStatusBar>
@@ -39,8 +42,10 @@
 
 namespace {
 
+constexpr int kSketchTab = 3;
+
 // Einfache, selbst gezeichnete Symbole (keine fremden Grafiken).
-enum class Icon { Pause, Sketch, Extrude, Revolve, Hole, Export, Home, Fit, Top, Front, Right, Slice, Save, Settings, Preview, Rect, Circle };
+enum class Icon { Line, Arc, Dim, Finish, Cancel, Construction, Select, Pause, Sketch, Extrude, Revolve, Hole, Export, Home, Fit, Top, Front, Right, Slice, Save, Settings, Preview, Rect, Circle };
 
 QIcon makeIcon(Icon kind)
 {
@@ -112,6 +117,32 @@ QIcon makeIcon(Icon kind)
     case Icon::Preview:
         for (int i = 0; i < 6; ++i) { p.setPen(QPen(i % 2 ? green : QColor(220, 60, 50), 4)); p.drawLine(10, 14 + i * 8, 54, 14 + i * 8); }
         break;
+    case Icon::Line:
+        p.setPen(QPen(blue, 4, Qt::SolidLine, Qt::RoundCap)); p.drawLine(10, 50, 54, 14);
+        p.setPen(Qt::NoPen); p.setBrush(dark); p.drawRect(6, 46, 8, 8); p.drawRect(50, 10, 8, 8);
+        break;
+    case Icon::Arc:
+        p.setPen(QPen(blue, 4)); p.drawArc(QRect(10, 14, 44, 44), 0, 180 * 16);
+        break;
+    case Icon::Dim:
+        p.setPen(QPen(green, 2)); p.drawLine(8, 40, 56, 40); p.drawLine(8, 30, 8, 50); p.drawLine(56, 30, 56, 50);
+        p.setFont(QFont("Sans", 16, QFont::Bold)); p.drawText(QRect(8, 6, 48, 30), Qt::AlignCenter, "25");
+        break;
+    case Icon::Finish:
+        p.setPen(QPen(green, 7, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.drawPolyline(QPolygon({{12, 34}, {26, 48}, {52, 16}}));
+        break;
+    case Icon::Cancel:
+        p.setPen(QPen(QColor(210, 60, 50), 7, Qt::SolidLine, Qt::RoundCap));
+        p.drawLine(16, 16, 48, 48); p.drawLine(48, 16, 16, 48);
+        break;
+    case Icon::Construction:
+        p.setPen(QPen(orange, 4, Qt::DashLine)); p.drawLine(8, 52, 56, 12);
+        break;
+    case Icon::Select:
+        p.setBrush(Qt::white);
+        p.drawPolygon(QPolygon({{18, 8}, {18, 52}, {29, 41}, {37, 58}, {44, 55}, {36, 38}, {50, 38}}));
+        break;
     case Icon::Pause:
         p.setBrush(QColor(150, 185, 230));
         for (int i = 0; i < 4; ++i) p.drawRect(8, 34 + i * 7, 48, 5);
@@ -125,6 +156,21 @@ QIcon makeIcon(Icon kind)
         p.setPen(QPen(blue, 4)); p.drawEllipse(12, 12, 40, 40);
         break;
     }
+    return QIcon(pm);
+}
+
+QIcon textIcon(const QString& text)
+{
+    QPixmap pm(64, 64);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setPen(QPen(QColor(120, 130, 145), 2));
+    p.setBrush(Qt::white);
+    p.drawRoundedRect(QRect(8, 8, 48, 48), 6, 6);
+    p.setPen(QColor(40, 60, 90));
+    p.setFont(QFont("Sans", 24, QFont::Bold));
+    p.drawText(QRect(8, 8, 48, 48), Qt::AlignCenter, text);
     return QIcon(pm);
 }
 
@@ -179,7 +225,12 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
     resize(1400, 900);
 
     m_view = new OcctView(this);
-    setCentralWidget(m_view);
+    m_canvas = new SketchCanvas(this);
+    m_stack = new QStackedWidget(this);
+    m_stack->addWidget(m_view);
+    m_stack->addWidget(m_canvas);
+    setCentralWidget(m_stack);
+    connect(m_canvas, &SketchCanvas::statusChanged, this, [this](const QString& t) { statusBar()->showMessage(t); });
 
     m_sliceWatcher = new QFutureWatcher<fw::SliceResult>(this);
     connect(m_sliceWatcher, &QFutureWatcher<fw::SliceResult>::finished, this, [this] { sliceFinished(); });
@@ -258,6 +309,51 @@ void MainWindow::buildRibbon()
     auto* aEvent = act("Ereignis", Icon::Pause, {}, [this] { cmdAddEventAtLayer(); });
     aEvent->setToolTip(QString::fromUtf8("Pause, Filamentwechsel, Temperatur o. Ä. ab der angezeigten Schicht einfügen"));
 
+    m_modelActions = {aSketch, aExtrude, aRevolve, aHole, aStl, aSlice, m_previewAction, aSave, aSettings, aEvent};
+
+    // --- Skizze (nur im Skizzenmodus sichtbar)
+    auto* toolGroup = new QActionGroup(this);
+    auto tool = [this, toolGroup](const QString& text, const QIcon& icon, SketchCanvas::Tool t, const QString& key = {}) {
+        auto* a = new QAction(icon, text, this);
+        a->setCheckable(true);
+        a->setData(static_cast<int>(t));
+        a->setToolTip(key.isEmpty() ? text : QString("%1 (%2)").arg(QString(text).replace("\n", " "), key));
+        toolGroup->addAction(a);
+        connect(a, &QAction::triggered, this, [this, t] { m_canvas->setTool(t); m_canvas->setFocus(); });
+        m_sketchToolActions.push_back(a);
+        return a;
+    };
+    auto* sSelect = tool("Auswählen", makeIcon(Icon::Select), SketchCanvas::Tool::Select, "Esc");
+    auto* sLine = tool("Linie", makeIcon(Icon::Line), SketchCanvas::Tool::Line, "L");
+    auto* sRect = tool("Rechteck", makeIcon(Icon::Rect), SketchCanvas::Tool::Rectangle, "R");
+    auto* sCircle = tool("Kreis", makeIcon(Icon::Circle), SketchCanvas::Tool::Circle, "C");
+    auto* sArc = tool("Bogen", makeIcon(Icon::Arc), SketchCanvas::Tool::Arc, "A");
+    auto* sDim = tool("Bemaßung", makeIcon(Icon::Dim), SketchCanvas::Tool::Dimension, "D");
+    auto* cCoin = tool("Koinzident", textIcon(QString::fromUtf8("●")), SketchCanvas::Tool::Coincident);
+    auto* cH = tool("Horizontal", textIcon("H"), SketchCanvas::Tool::Horizontal);
+    auto* cV = tool("Vertikal", textIcon("V"), SketchCanvas::Tool::Vertical);
+    auto* cPar = tool("Parallel", textIcon(QString::fromUtf8("∥")), SketchCanvas::Tool::Parallel);
+    auto* cPerp = tool("Senkrecht", textIcon(QString::fromUtf8("⊥")), SketchCanvas::Tool::Perpendicular);
+    auto* cTan = tool("Tangential", textIcon("T"), SketchCanvas::Tool::Tangent);
+    auto* cEq = tool("Gleich", textIcon("="), SketchCanvas::Tool::Equal);
+    auto* cFix = tool("Fixieren", textIcon("F"), SketchCanvas::Tool::Fix);
+    auto* cMid = tool("Mittelpunkt", textIcon("M"), SketchCanvas::Tool::Midpoint);
+    auto* sConstr = new QAction(makeIcon(Icon::Construction), "Konstruk-\ntion", this);
+    sConstr->setToolTip("Gewähltes Objekt zu Konstruktionsgeometrie machen (zählt nicht zum Profil)");
+    connect(sConstr, &QAction::triggered, this, [this] { m_canvas->toggleConstruction(); });
+    auto* sShow = new QAction(textIcon("H V"), QString::fromUtf8("Abhängig-\nkeiten"), this);
+    sShow->setCheckable(true);
+    sShow->setChecked(true);
+    connect(sShow, &QAction::toggled, this, [this](bool on) { m_canvas->setShowConstraints(on); });
+    auto* sFinish = new QAction(makeIcon(Icon::Finish), "Skizze\nfertig stellen", this);
+    connect(sFinish, &QAction::triggered, this, [this] { finishSketch(true); });
+    auto* sCancel = new QAction(makeIcon(Icon::Cancel), "Abbrechen", this);
+    connect(sCancel, &QAction::triggered, this, [this] { finishSketch(false); });
+    connect(m_canvas, &SketchCanvas::toolChanged, this, [this] {
+        for (QAction* a : m_sketchToolActions)
+            a->setChecked(a->data().toInt() == static_cast<int>(m_canvas->tool()));
+    });
+
     m_layerSlider = new QSlider(Qt::Horizontal);
     m_layerSlider->setMinimumWidth(220);
     m_layerSlider->setEnabled(false);
@@ -301,6 +397,13 @@ void MainWindow::buildRibbon()
     m_ribbon->addTab(makeRibbonPage({printerPanel,
                                      makePanel("Ergebnis", {m_previewAction, aSave}), layerPanel}),
                      "3D-Druck");
+    m_ribbon->addTab(makeRibbonPage({makePanel("Zeichnen", {sSelect, sLine, sRect, sCircle, sArc}),
+                                     makePanel("Bemaßen", {sDim}),
+                                     makePanel("Abhängigkeiten", {cCoin, cH, cV, cPar, cPerp, cTan, cEq, cFix, cMid}),
+                                     makePanel("Format", {sConstr, sShow}),
+                                     makePanel("Beenden", {sFinish, sCancel})}),
+                     "Skizze");
+    m_ribbon->setTabVisible(kSketchTab, false);
     m_ribbon->setFixedHeight(118);
     m_ribbon->setStyleSheet("QTabWidget::pane { background: #f4f6f9; border-bottom: 1px solid #c8cdd5; }");
 
@@ -399,13 +502,13 @@ void MainWindow::loadDemoPart()
 {
     // Beispielteil: Platte mit Bohrung und aufgesetztem Zapfen
     auto sk1 = std::make_shared<fw::Sketch>("Skizze1", fw::SketchPlane::XY);
-    sk1->rectangles().push_back({0, 0, 60, 40});
-    sk1->circles().push_back({15, 20, 6});
+    sk1->addRectangle(0, 0, 60, 40);
+    sk1->addCircle(15, 20, 6);
     m_doc.addFeature(sk1);
     m_doc.addFeature(std::make_shared<fw::ExtrudeFeature>("Extrusion1", sk1, 8.0));
 
     auto sk2 = std::make_shared<fw::Sketch>("Skizze2", fw::SketchPlane::XY, 8.0);
-    sk2->circles().push_back({42, 20, 10});
+    sk2->addCircle(42, 20, 10);
     m_doc.addFeature(sk2);
     m_doc.addFeature(std::make_shared<fw::ExtrudeFeature>("Extrusion2", sk2, 15.0));
 
@@ -540,11 +643,43 @@ void MainWindow::cmdNewSketch()
 {
     NewSketchDialog dlg(this);
     if (dlg.exec() != QDialog::Accepted) return;
-    auto s = std::make_shared<fw::Sketch>(m_doc.nextName("Skizze"), dlg.plane(), dlg.offset());
-    SketchEditDialog edit(*s, this);
-    if (edit.exec() != QDialog::Accepted) return;
-    edit.applyTo(*s);
-    m_doc.addFeature(s);
+    enterSketch(std::make_shared<fw::Sketch>(m_doc.nextName("Skizze"), dlg.plane(), dlg.offset()), true);
+}
+
+void MainWindow::enterSketch(const fw::SketchPtr& sketch, bool isNew)
+{
+    if (m_printPreview) setPrintPreview(false);
+    m_editSketch = sketch;
+    m_editSketchIsNew = isNew;
+    for (QAction* a : m_modelActions) a->setEnabled(false);
+    m_undoAction->setEnabled(false);
+    m_redoAction->setEnabled(false);
+    m_ribbon->setTabVisible(kSketchTab, true);
+    for (int i = 0; i < m_ribbon->count(); ++i) m_ribbon->setTabEnabled(i, i == kSketchTab);
+    m_ribbon->setCurrentIndex(kSketchTab);
+    m_stack->setCurrentWidget(m_canvas);
+    m_canvas->begin(*sketch);
+    m_canvas->setFocus();
+    m_browser->setEnabled(false);
+}
+
+void MainWindow::finishSketch(bool accept)
+{
+    if (!m_editSketch) return;
+    fw::SketchPtr sketch = m_editSketch;
+    m_editSketch.reset();
+    for (QAction* a : m_modelActions) a->setEnabled(true);
+    for (int i = 0; i < m_ribbon->count(); ++i) m_ribbon->setTabEnabled(i, true);
+    m_ribbon->setTabVisible(kSketchTab, false);
+    m_ribbon->setCurrentIndex(0);
+    m_stack->setCurrentWidget(m_view);
+    m_browser->setEnabled(true);
+    statusBar()->clearMessage();
+
+    if (accept) {
+        sketch->geometry() = m_canvas->geometry();
+        if (m_editSketchIsNew && !sketch->isEmpty()) m_doc.addFeature(sketch);
+    }
     rebuild();
 }
 
@@ -579,8 +714,7 @@ void MainWindow::cmdRevolve()
 void MainWindow::cmdEditFeature(const fw::FeaturePtr& f)
 {
     if (auto s = std::dynamic_pointer_cast<fw::Sketch>(f)) {
-        SketchEditDialog dlg(*s, this);
-        if (dlg.exec() == QDialog::Accepted) { dlg.applyTo(*s); rebuild(); }
+        enterSketch(s, false);
     } else if (auto e = std::dynamic_pointer_cast<fw::ExtrudeFeature>(f)) {
         ExtrudeDialog dlg({e->sketch()}, this);
         dlg.setValues(*e);
@@ -816,8 +950,8 @@ void MainWindow::updateTitle()
 {
     const QString name = m_filePath.isEmpty() ? QString::fromStdString(m_doc.name()) : QFileInfo(m_filePath).fileName();
     setWindowTitle(QString("%1%2 – FormWerk").arg(name, m_modified ? "*" : ""));
-    if (m_undoAction) m_undoAction->setEnabled(!m_undo.empty());
-    if (m_redoAction) m_redoAction->setEnabled(!m_redo.empty());
+    if (m_undoAction) m_undoAction->setEnabled(!m_undo.empty() && !m_editSketch);
+    if (m_redoAction) m_redoAction->setEnabled(!m_redo.empty() && !m_editSketch);
 }
 
 void MainWindow::cmdUndo()
