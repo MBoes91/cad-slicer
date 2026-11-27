@@ -34,7 +34,13 @@ add_library(formwerk_core STATIC
   src/core/Expression.cpp
   src/core/ModifyFeatures.cpp)
 target_include_directories(formwerk_core PUBLIC src ${OpenCASCADE_INCLUDE_DIR})
-target_link_libraries(formwerk_core PUBLIC ${OCC_CORE_LIBS} TKSTL)
+# OpenCascade 7.8+ hat TKSTL in TKDESTL umbenannt (vcpkg liefert 8.x)
+if(TARGET TKDESTL)
+  set(OCC_STL_LIB TKDESTL)
+else()
+  set(OCC_STL_LIB TKSTL)
+endif()
+target_link_libraries(formwerk_core PUBLIC ${OCC_CORE_LIBS} ${OCC_STL_LIB})
 
 # --- Slicer fuer den Ender 3 V2 ----------------------------------------------
 add_library(formwerk_slicer STATIC

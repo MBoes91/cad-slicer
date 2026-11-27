@@ -2,6 +2,8 @@
 
 #include <Aspect_DisplayConnection.hxx>
 #include <Graphic3d_Camera.hxx>
+#include <Graphic3d_Vec2.hxx>
+#include <AIS_MouseGesture.hxx>
 
 #include <algorithm>
 #include <cmath>
