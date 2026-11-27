@@ -29,6 +29,10 @@ class QMenu;
 class QTimer;
 class QStackedWidget;
 class SketchCanvas;
+class QTabBar;
+class QToolBar;
+class QListWidget;
+class QDockWidget;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -41,6 +45,19 @@ private:
     void buildBrowser();
     void buildFileMenu();
     void loadDemoPart();
+    QWidget* buildHomePage();
+    void refreshHomePage();
+    void showHome();
+    void showModel();
+    void syncDocTabs(bool home);
+    void setPageShown(QWidget* page, bool on);
+    void enterPrintEnvironment();
+    void exitPrintEnvironment();
+    void setVisualStyle(int style);
+    void applyBodyStyle();
+    void showViewContextMenu(const QPoint& globalPos);
+    void cmdMeasure();
+    void cmdCloseDoc();
 
     // Modell
     void rebuild(bool fit = false);
@@ -102,6 +119,24 @@ private:
     bool m_editSketchIsNew = false;
     std::vector<QAction*> m_modelActions;
     std::vector<QAction*> m_sketchToolActions;
+    std::vector<QAction*> m_docActions; // nur mit offenem Dokument
+    QWidget* m_modelPage = nullptr;
+    QWidget* m_homePage = nullptr;
+    QListWidget* m_recentList = nullptr;
+    QTabBar* m_docTabs = nullptr;
+    bool m_syncingTabs = false;
+    QToolBar* m_navBar = nullptr;
+    QDockWidget* m_browserDock = nullptr;
+    QWidget* m_sketchPage = nullptr;
+    QWidget* m_printPage = nullptr;
+    QWidget* m_modelTabPage = nullptr;
+    QLabel* m_titleLabel = nullptr;
+    bool m_docOpen = false;
+    bool m_inPrintEnv = false;
+    int m_visualStyle = 1; // 0 schattiert, 1 mit Kanten, 2 Drahtkoerper
+    QAction* m_styleShaded = nullptr;
+    QAction* m_styleEdges = nullptr;
+    QAction* m_styleWire = nullptr;
     QTabWidget* m_ribbon = nullptr;
     QTreeWidget* m_browser = nullptr;
     QSlider* m_layerSlider = nullptr;

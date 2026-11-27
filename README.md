@@ -26,7 +26,8 @@ Technik: C++17, Qt 6 (Oberfläche), OpenCascade (CAD-Kernel), Clipper (2D-Polygo
   getriebene Bemaßungen bei Überbestimmung, Anzeige der offenen Freiheitsgrade („Vollständig bestimmt")
 - Extrusion (Verbinden, Differenz, Schnittmenge, symmetrisch), Drehung um eine Skizzenachse
 - Parametrische Neuberechnung: Maß ändern, Modell baut sich neu auf
-- ViewCube, Ausgangsansicht (F6), Standardansichten, STL-Export
+- Bedienrahmen wie Inventor: Schnellzugriff-Leiste, Register 3D-Modell/Prüfen/Verwalten/Ansicht/Umgebungen, kontextuelle Register Skizze und 3D-Druck, Startseite mit "Zuletzt verwendet", Dokument-Register unten, Navigationsleiste rechts, Bauteilende im Browser
+- ViewCube, Ausgangsansicht (F6), vorherige Ansicht (F5), Standardansichten, Darstellung schattiert/mit Kanten/Drahtkörper, Perspektive, physikalische Eigenschaften, STL-Export
 
 **Slicer (Ender 3 V2)**
 - Wände, Boden- und Deckschichten, Linien-Infill (abwechselnd ±45°), Skirt
@@ -43,9 +44,9 @@ Technik: C++17, Qt 6 (Oberfläche), OpenCascade (CAD-Kernel), Clipper (2D-Polygo
 - Farbige Schichtvorschau auf dem Druckbett, Druckzeit- und Filamentschätzung
 - G-Code mit `;LAYER:` / `;TYPE:`-Kommentaren (kompatibel mit gängigen G-Code-Viewern)
 
-**Tastenkürzel:** Strg+N/O/S Datei · Strg+Z/Y Rückgängig/Wiederholen · S Skizze (darin: L Linie, R Rechteck, C Kreis, A Bogen, D Bemaßung, Esc Auswählen) · E Extrusion · R Drehung · F6 Ausgangsansicht · Strg+R Slicen · Strg+G G-Code speichern
+**Tastenkürzel:** Strg+N/O/S Datei · Strg+Z/Y Rückgängig/Wiederholen · S Skizze (darin: L Linie, R Rechteck, C Kreis, A Bogen, D Bemaßung, Esc Auswählen) · E Extrusion · R Drehung · F2/F3/F4 halten + linke Maustaste: Pan/Zoom/Orbit · F5 vorherige Ansicht · F6 Ausgangsansicht · Pos1 Alles zoomen · Strg+R Slicen · Strg+G G-Code speichern
 
-**Maus:** Rad = Zoom · Mittlere Taste = Verschieben · Umschalt+Mitte oder Rechts = Drehen
+**Maus:** Rad = Zoom · Mittlere Taste = Verschieben · Umschalt+Mitte = Orbit · Doppelklick Mitte = Alles zoomen · Rechtsklick = Kontextmenü
 
 ## Nächste Schritte
 

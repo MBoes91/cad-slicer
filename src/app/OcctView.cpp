@@ -1,6 +1,10 @@
 #include "app/OcctView.h"
 
 #include <Aspect_DisplayConnection.hxx>
+#include <Graphic3d_Camera.hxx>
+
+#include <algorithm>
+#include <cmath>
 #include <Graphic3d_TransformPers.hxx>
 #include <OpenGl_GraphicDriver.hxx>
 #include <Prs3d_DatumAspect.hxx>
@@ -13,7 +17,10 @@
 #include <Xw_Window.hxx>
 #endif
 
+#include <QApplication>
+#include <QKeyEvent>
 #include <QMouseEvent>
+#include <QTimer>
 #include <QWheelEvent>
 
 namespace {
@@ -57,7 +64,8 @@ OcctView::OcctView(QWidget* parent) : QWidget(parent)
     g.Clear();
     g.Bind(Aspect_VKeyMouse_MiddleButton, AIS_MouseGesture_Pan);
     g.Bind(Aspect_VKeyMouse_MiddleButton | Aspect_VKeyFlags_SHIFT, AIS_MouseGesture_RotateOrbit);
-    g.Bind(Aspect_VKeyMouse_RightButton, AIS_MouseGesture_RotateOrbit);
+    // Zoom per Ziehen (F3) wird intern auf diese Kombination umgelegt
+    g.Bind(Aspect_VKeyMouse_RightButton | Aspect_VKeyFlags_CTRL | Aspect_VKeyFlags_ALT, AIS_MouseGesture_Zoom);
     g.Bind(Aspect_VKeyMouse_LeftButton | Aspect_VKeyFlags_SHIFT, AIS_MouseGesture_SelectRectangle);
     SetAllowRotation(true);
 }
@@ -166,6 +174,7 @@ void OcctView::redraw()
 void OcctView::fitAll()
 {
     // Erst beim naechsten Zeichnen ausfuehren, wenn die Fenstergroesse sicher stimmt
+    if (!m_view.IsNull()) rememberCurrent();
     m_fitPending = true;
     update();
 }
@@ -179,38 +188,216 @@ void OcctView::homeView()
 void OcctView::setStandardView(V3d_TypeOfOrientation o)
 {
     if (m_view.IsNull()) return;
+    rememberCurrent();
     m_view->SetProj(o);
     fitAll();
+}
+
+void OcctView::setPerspective(bool on)
+{
+    if (m_view.IsNull()) return;
+    m_view->Camera()->SetProjectionType(on ? Graphic3d_Camera::Projection_Perspective
+                                           : Graphic3d_Camera::Projection_Orthographic);
+    redraw();
+}
+
+// --- Kamera-Verlauf (F5) -----------------------------------------------------------
+
+namespace {
+bool sameCamera(const Handle(Graphic3d_Camera)& a, const Handle(Graphic3d_Camera)& b)
+{
+    if (a.IsNull() || b.IsNull()) return false;
+    const double tol = 1e-6 * std::max(1.0, a->Distance());
+    return a->Eye().Distance(b->Eye()) < tol && a->Center().Distance(b->Center()) < tol
+        && a->Up().IsEqual(b->Up(), 1e-9) && std::abs(a->Scale() - b->Scale()) <= 1e-9 * std::abs(a->Scale())
+        && a->ProjectionType() == b->ProjectionType();
+}
+} // namespace
+
+Handle(Graphic3d_Camera) OcctView::snapshot() const
+{
+    Handle(Graphic3d_Camera) c = new Graphic3d_Camera();
+    c->Copy(m_view->Camera());
+    return c;
+}
+
+void OcctView::remember(const Handle(Graphic3d_Camera)& cam)
+{
+    if (cam.IsNull()) return;
+    if (!m_history.empty() && sameCamera(m_history.back(), cam)) return;
+    m_history.push_back(cam);
+    if (m_history.size() > 50) m_history.erase(m_history.begin());
+}
+
+void OcctView::rememberCurrent()
+{
+    if (!m_view.IsNull()) remember(snapshot());
+}
+
+bool OcctView::hasPreviousView() const
+{
+    return !m_history.empty();
+}
+
+void OcctView::previousView()
+{
+    if (m_view.IsNull()) return;
+    const Handle(Graphic3d_Camera) now = snapshot();
+    while (!m_history.empty() && sameCamera(m_history.back(), now)) m_history.pop_back();
+    if (m_history.empty()) {
+        emit hint(QString::fromUtf8("Keine vorherige Ansicht vorhanden"));
+        return;
+    }
+    m_view->Camera()->Copy(m_history.back());
+    m_history.pop_back();
+    m_view->Invalidate();
+    update();
+}
+
+// --- Navigationsmodi (F2/F3/F4) ------------------------------------------------------
+
+void OcctView::setNavMode(NavMode mode, bool sticky)
+{
+    m_navMode = mode;
+    m_navSticky = sticky && mode != NavMode::None;
+    switch (mode) {
+    case NavMode::Pan:
+        setCursor(Qt::OpenHandCursor);
+        emit hint(QString::fromUtf8("Verschieben: mit gedrückter linker Maustaste ziehen") + (m_navSticky ? QString::fromUtf8(" · Esc beendet") : QString()));
+        break;
+    case NavMode::Zoom:
+        setCursor(Qt::SizeVerCursor);
+        emit hint(QString::fromUtf8("Zoom: mit gedrückter linker Maustaste nach oben/unten ziehen") + (m_navSticky ? QString::fromUtf8(" · Esc beendet") : QString()));
+        break;
+    case NavMode::Orbit:
+        setCursor(Qt::SizeAllCursor);
+        emit hint(QString::fromUtf8("Orbit: mit gedrückter linker Maustaste ziehen") + (m_navSticky ? QString::fromUtf8(" · Esc beendet") : QString()));
+        break;
+    case NavMode::None:
+        unsetCursor();
+        emit hint(QString());
+        break;
+    }
+}
+
+Aspect_VKeyMouse OcctView::mapButtons(Qt::MouseButtons b) const
+{
+    Qt::MouseButtons rest = b;
+    Aspect_VKeyMouse m = Aspect_VKeyMouse_NONE;
+    if (m_navMode != NavMode::None && (b & Qt::LeftButton)) {
+        rest &= ~Qt::LeftButton;
+        m |= (m_navMode == NavMode::Zoom) ? Aspect_VKeyMouse_RightButton : Aspect_VKeyMouse_MiddleButton;
+    }
+    // Die rechte Taste bewegt die Ansicht nicht (sie oeffnet das Kontextmenue)
+    rest &= ~Qt::RightButton;
+    return m | toVKeyMouse(rest);
+}
+
+Aspect_VKeyFlags OcctView::mapFlags(Qt::MouseButtons b, Qt::KeyboardModifiers mod) const
+{
+    if (m_navMode != NavMode::None && (b & Qt::LeftButton)) {
+        if (m_navMode == NavMode::Orbit) return Aspect_VKeyFlags_SHIFT;
+        if (m_navMode == NavMode::Zoom) return Aspect_VKeyFlags_CTRL | Aspect_VKeyFlags_ALT;
+        return Aspect_VKeyFlags_NONE;
+    }
+    return toVKeyFlags(mod);
 }
 
 void OcctView::mousePressEvent(QMouseEvent* e)
 {
     if (m_view.IsNull()) return;
-    if (UpdateMouseButtons(posOf(e->position(), devicePixelRatioF()), toVKeyMouse(e->buttons()),
-                           toVKeyFlags(e->modifiers()), false))
+    if (m_lastButtons == Qt::NoButton) m_pressCamera = snapshot();
+    m_lastButtons = e->buttons();
+    if (e->button() == Qt::RightButton) {
+        if (m_navSticky) { setNavMode(NavMode::None, false); return; }
+        emit contextMenuAt(e->globalPosition().toPoint());
+        return;
+    }
+    if (m_navMode == NavMode::Pan && e->button() == Qt::LeftButton) setCursor(Qt::ClosedHandCursor);
+    if (UpdateMouseButtons(posOf(e->position(), devicePixelRatioF()), mapButtons(e->buttons()),
+                           mapFlags(e->buttons(), e->modifiers()), false))
         update();
 }
 
 void OcctView::mouseReleaseEvent(QMouseEvent* e)
 {
     if (m_view.IsNull()) return;
-    if (UpdateMouseButtons(posOf(e->position(), devicePixelRatioF()), toVKeyMouse(e->buttons()),
-                           toVKeyFlags(e->modifiers()), false))
+    m_lastButtons = e->buttons();
+    if (m_navMode == NavMode::Pan && e->button() == Qt::LeftButton) setCursor(Qt::OpenHandCursor);
+    if (UpdateMouseButtons(posOf(e->position(), devicePixelRatioF()), mapButtons(e->buttons()),
+                           mapFlags(e->buttons(), e->modifiers()), false))
         update();
+    if (e->buttons() == Qt::NoButton && !m_pressCamera.IsNull()) {
+        // Nach Ende der Bewegung (auch ViewCube-Animation) die Ansicht davor merken
+        Handle(Graphic3d_Camera) before = m_pressCamera;
+        m_pressCamera.Nullify();
+        QTimer::singleShot(700, this, [this, before] {
+            if (!m_view.IsNull() && !sameCamera(before, m_view->Camera())) remember(before);
+        });
+    }
 }
 
 void OcctView::mouseMoveEvent(QMouseEvent* e)
 {
     if (m_view.IsNull()) return;
-    if (UpdateMousePosition(posOf(e->position(), devicePixelRatioF()), toVKeyMouse(e->buttons()),
-                            toVKeyFlags(e->modifiers()), false))
+    if (UpdateMousePosition(posOf(e->position(), devicePixelRatioF()), mapButtons(e->buttons()),
+                            mapFlags(e->buttons(), e->modifiers()), false))
         update();
+}
+
+void OcctView::mouseDoubleClickEvent(QMouseEvent* e)
+{
+    if (e->button() == Qt::MiddleButton) {
+        fitAll();
+        return;
+    }
+    mousePressEvent(e);
 }
 
 void OcctView::wheelEvent(QWheelEvent* e)
 {
     if (m_view.IsNull()) return;
+    // Eine zusammenhaengende Zoom-Bewegung zaehlt als ein Schritt im Verlauf
+    if (!m_wheelTimer.isValid() || m_wheelTimer.elapsed() > 800) rememberCurrent();
+    m_wheelTimer.restart();
     const Graphic3d_Vec2i pos = posOf(e->position(), devicePixelRatioF());
     if (UpdateZoom(Aspect_ScrollDelta(pos, e->angleDelta().y() / 8.0)))
         update();
+}
+
+void OcctView::keyPressEvent(QKeyEvent* e)
+{
+    if (e->isAutoRepeat()) { e->accept(); return; }
+    switch (e->key()) {
+    case Qt::Key_F2: setNavMode(NavMode::Pan, false); break;
+    case Qt::Key_F3: setNavMode(NavMode::Zoom, false); break;
+    case Qt::Key_F4: setNavMode(NavMode::Orbit, false); break;
+    case Qt::Key_Escape:
+        if (m_navMode != NavMode::None) { setNavMode(NavMode::None, false); break; }
+        QWidget::keyPressEvent(e);
+        return;
+    default:
+        QWidget::keyPressEvent(e);
+        return;
+    }
+    e->accept();
+}
+
+void OcctView::keyReleaseEvent(QKeyEvent* e)
+{
+    if (e->isAutoRepeat()) { e->accept(); return; }
+    const int k = e->key();
+    if ((k == Qt::Key_F2 || k == Qt::Key_F3 || k == Qt::Key_F4) && !m_navSticky) {
+        setNavMode(NavMode::None, false);
+        e->accept();
+        return;
+    }
+    QWidget::keyReleaseEvent(e);
+}
+
+void OcctView::enterEvent(QEnterEvent* e)
+{
+    // Wie in Inventor: F-Tasten wirken, sobald die Maus ueber dem Grafikfenster ist
+    if (window()->isActiveWindow() && !QApplication::activePopupWidget()) setFocus(Qt::MouseFocusReason);
+    QWidget::enterEvent(e);
 }

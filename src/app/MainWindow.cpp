@@ -11,6 +11,8 @@
 #include <BRepPrimAPI_MakeCylinder.hxx>
 #include <BRepBndLib.hxx>
 #include <Bnd_Box.hxx>
+#include <BRepGProp.hxx>
+#include <GProp_GProps.hxx>
 #include <Prs3d_LineAspect.hxx>
 #include <Prs3d_Drawer.hxx>
 
@@ -37,6 +39,9 @@
 #include <QSlider>
 #include <QStatusBar>
 #include <QTabWidget>
+#include <QTabBar>
+#include <QListWidget>
+#include <QDateTime>
 #include <QToolBar>
 #include <QToolButton>
 #include <QTreeWidget>
@@ -45,10 +50,9 @@
 
 namespace {
 
-constexpr int kSketchTab = 3;
-
 // Einfache, selbst gezeichnete Symbole (keine fremden Grafiken).
-enum class Icon { Line, Arc, Dim, Finish, Cancel, Construction, Select, Pause, Sketch, Extrude, Revolve, Hole, Export, Home, Fit, Top, Front, Right, Slice, Save, Settings, Preview, Rect, Circle };
+enum class Icon { Line, Arc, Dim, Finish, Cancel, Construction, Select, Pause, Sketch, Extrude, Revolve, Hole, Export, Home, Fit, Top, Front, Right, Slice, Save, Settings, Preview, Rect, Circle,
+                  Pan, Zoom, Orbit, PrevView, NewDoc, OpenDoc, Disk, Measure, Update, PrintEnv, Shaded, Edges, Wire, Persp, EndOfPart, Close };
 
 QIcon makeIcon(Icon kind)
 {
@@ -158,6 +162,89 @@ QIcon makeIcon(Icon kind)
     case Icon::Circle:
         p.setPen(QPen(blue, 4)); p.drawEllipse(12, 12, 40, 40);
         break;
+    case Icon::Pan: {
+        p.setPen(QPen(dark, 4, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.drawLine(32, 6, 32, 58); p.drawLine(6, 32, 58, 32);
+        p.setBrush(dark);
+        p.drawPolygon(QPolygon({{32, 4}, {24, 14}, {40, 14}}));
+        p.drawPolygon(QPolygon({{32, 60}, {24, 50}, {40, 50}}));
+        p.drawPolygon(QPolygon({{4, 32}, {14, 24}, {14, 40}}));
+        p.drawPolygon(QPolygon({{60, 32}, {50, 24}, {50, 40}}));
+        break;
+    }
+    case Icon::Zoom:
+        p.setPen(QPen(dark, 5)); p.setBrush(QColor(200, 220, 245)); p.drawEllipse(8, 8, 34, 34);
+        p.setPen(QPen(dark, 8, Qt::SolidLine, Qt::RoundCap)); p.drawLine(40, 40, 56, 56);
+        break;
+    case Icon::Orbit:
+        p.setPen(QPen(blue, 4)); p.drawArc(QRect(6, 18, 52, 28), 30 * 16, 300 * 16);
+        p.setPen(Qt::NoPen); p.setBrush(blue); p.drawPolygon(QPolygon({{50, 14}, {58, 26}, {44, 26}}));
+        p.setBrush(QColor(150, 185, 230)); p.setPen(QPen(dark, 2)); p.drawEllipse(24, 24, 16, 16);
+        break;
+    case Icon::PrevView:
+        p.setPen(QPen(dark, 3)); p.setBrush(QColor(220, 225, 232)); p.drawRect(18, 18, 38, 30);
+        p.setPen(QPen(blue, 5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.drawLine(6, 30, 26, 30); p.drawPolyline(QPolygon({{14, 22}, {6, 30}, {14, 38}}));
+        break;
+    case Icon::NewDoc:
+        p.setBrush(Qt::white);
+        p.drawPolygon(QPolygon({{14, 6}, {40, 6}, {52, 18}, {52, 58}, {14, 58}}));
+        p.drawPolyline(QPolygon({{40, 6}, {40, 18}, {52, 18}}));
+        break;
+    case Icon::OpenDoc:
+        p.setBrush(QColor(240, 200, 90));
+        p.drawPolygon(QPolygon({{6, 14}, {24, 14}, {28, 20}, {54, 20}, {54, 52}, {6, 52}}));
+        p.setBrush(QColor(250, 220, 120));
+        p.drawPolygon(QPolygon({{6, 52}, {16, 28}, {60, 28}, {54, 52}}));
+        break;
+    case Icon::Disk:
+        p.setBrush(QColor(70, 110, 170)); p.drawRect(8, 8, 48, 48);
+        p.setBrush(Qt::white); p.drawRect(18, 8, 28, 18); p.drawRect(16, 36, 32, 20);
+        break;
+    case Icon::Measure:
+        p.setBrush(QColor(245, 215, 110)); p.drawRect(6, 22, 52, 20);
+        for (int i = 0; i < 6; ++i) p.drawLine(12 + i * 8, 22, 12 + i * 8, i % 2 ? 30 : 34);
+        break;
+    case Icon::Update:
+        p.setPen(QPen(green, 5)); p.drawArc(QRect(10, 10, 44, 44), 60 * 16, 280 * 16);
+        p.setPen(Qt::NoPen); p.setBrush(green); p.drawPolygon(QPolygon({{40, 4}, {52, 14}, {36, 18}}));
+        break;
+    case Icon::PrintEnv:
+        p.setBrush(QColor(220, 225, 232)); p.drawRect(8, 8, 48, 48);
+        p.setBrush(dark); p.drawRect(22, 14, 20, 10); p.drawPolygon(QPolygon({{28, 24}, {36, 24}, {32, 32}}));
+        p.setPen(Qt::NoPen); p.setBrush(orange);
+        for (int i = 0; i < 3; ++i) p.drawRect(16, 50 - i * 6, 32, 4);
+        break;
+    case Icon::Shaded:
+    case Icon::Edges:
+    case Icon::Wire: {
+        QPolygon front({{10, 30}, {40, 30}, {40, 56}, {10, 56}});
+        QPolygon top({{10, 30}, {24, 16}, {54, 16}, {40, 30}});
+        QPolygon side({{40, 30}, {54, 16}, {54, 42}, {40, 56}});
+        if (kind == Icon::Wire) { p.setBrush(Qt::NoBrush); p.setPen(QPen(dark, 2)); }
+        else if (kind == Icon::Shaded) { p.setPen(Qt::NoPen); }
+        if (kind != Icon::Wire) p.setBrush(QColor(150, 185, 230));
+        p.drawPolygon(front);
+        if (kind != Icon::Wire) p.setBrush(QColor(185, 210, 240));
+        p.drawPolygon(top);
+        if (kind != Icon::Wire) p.setBrush(QColor(110, 150, 205));
+        p.drawPolygon(side);
+        break;
+    }
+    case Icon::Persp:
+        p.setBrush(QColor(150, 185, 230));
+        p.drawPolygon(QPolygon({{8, 12}, {56, 22}, {56, 42}, {8, 52}}));
+        break;
+    case Icon::EndOfPart:
+        p.setPen(Qt::NoPen); p.setBrush(QColor(200, 50, 40));
+        p.drawRoundedRect(QRect(8, 22, 48, 20), 4, 4);
+        p.setBrush(Qt::white); p.drawRect(14, 29, 36, 6);
+        break;
+    case Icon::Close:
+        p.setBrush(QColor(210, 60, 50)); p.setPen(Qt::NoPen); p.drawRoundedRect(QRect(6, 6, 52, 52), 8, 8);
+        p.setPen(QPen(Qt::white, 6, Qt::SolidLine, Qt::RoundCap));
+        p.drawLine(20, 20, 44, 44); p.drawLine(44, 20, 20, 44);
+        break;
     }
     return QIcon(pm);
 }
@@ -242,13 +329,55 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
 {
     resize(1400, 900);
 
-    m_view = new OcctView(this);
-    m_canvas = new SketchCanvas(this);
-    m_stack = new QStackedWidget(this);
-    m_stack->addWidget(m_view);
-    m_stack->addWidget(m_canvas);
-    setCentralWidget(m_stack);
+    m_view = new OcctView;
+    m_canvas = new SketchCanvas;
     connect(m_canvas, &SketchCanvas::statusChanged, this, [this](const QString& t) { statusBar()->showMessage(t); });
+    connect(m_view, &OcctView::hint, this, [this](const QString& t) {
+        if (t.isEmpty()) statusBar()->showMessage("Bereit");
+        else statusBar()->showMessage(t);
+    });
+    connect(m_view, &OcctView::contextMenuAt, this, [this](const QPoint& pos) { showViewContextMenu(pos); });
+
+    // Grafikbereich: 3D-Fenster mit Navigationsleiste rechts
+    m_modelPage = new QWidget;
+    auto* mh = new QHBoxLayout(m_modelPage);
+    mh->setContentsMargins(0, 0, 0, 0);
+    mh->setSpacing(0);
+    mh->addWidget(m_view, 1);
+    m_navBar = new QToolBar;
+    m_navBar->setOrientation(Qt::Vertical);
+    m_navBar->setIconSize(QSize(22, 22));
+    m_navBar->setStyleSheet("QToolBar { background: #eef1f5; border-left: 1px solid #c8cdd5; spacing: 2px; padding: 4px 1px; }");
+    mh->addWidget(m_navBar);
+
+    m_homePage = buildHomePage();
+
+    m_stack = new QStackedWidget;
+    m_stack->addWidget(m_homePage);
+    m_stack->addWidget(m_modelPage);
+    m_stack->addWidget(m_canvas);
+
+    // Dokument-Register unten wie in Inventor
+    m_docTabs = new QTabBar;
+    m_docTabs->setShape(QTabBar::RoundedSouth);
+    m_docTabs->setDocumentMode(true);
+    m_docTabs->setExpanding(false);
+    m_docTabs->setDrawBase(false);
+    m_docTabs->addTab(makeIcon(Icon::Home), QString());
+    m_docTabs->setTabToolTip(0, "Startseite");
+    connect(m_docTabs, &QTabBar::currentChanged, this, [this](int i) {
+        if (m_syncingTabs) return;
+        if (i == 0) showHome();
+        else showModel();
+    });
+
+    auto* central = new QWidget;
+    auto* cv = new QVBoxLayout(central);
+    cv->setContentsMargins(0, 0, 0, 0);
+    cv->setSpacing(0);
+    cv->addWidget(m_stack, 1);
+    cv->addWidget(m_docTabs);
+    setCentralWidget(central);
 
     m_sliceWatcher = new QFutureWatcher<fw::SliceResult>(this);
     connect(m_sliceWatcher, &QFutureWatcher<fw::SliceResult>::finished, this, [this] { sliceFinished(); });
@@ -271,9 +400,6 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
     buildBrowser();
     buildFileMenu();
 
-    statusBar()->showMessage(QString::fromUtf8(
-        "Mausrad: Zoom  ·  Mittlere Maustaste: Verschieben  ·  Umschalt+Mitte oder Rechts: Drehen  ·  F6: Ausgangsansicht"));
-
     // Zuletzt verwendetes Druckprofil wiederherstellen
     QSettings settings;
     const QByteArray stored = settings.value("druckprofil").toByteArray();
@@ -283,16 +409,237 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
     }
     m_profileLabel->setText(QString::fromStdString(m_profile.name));
 
-    loadDemoPart();
+    if (qEnvironmentVariableIsSet("FORMWERK_DEMO")) loadDemoPart();
+    else showHome();
+}
+
+QWidget* MainWindow::buildHomePage()
+{
+    auto* page = new QWidget;
+    page->setObjectName("Startseite");
+    page->setStyleSheet("#Startseite { background: #f2f4f7; }"
+                        "QLabel#Titel { font-size: 22px; font-weight: bold; color: #26364d; }"
+                        "QLabel#Abschnitt { font-size: 13px; font-weight: bold; color: #4a5568; margin-top: 10px; }"
+                        "QToolButton { background: white; border: 1px solid #cfd5dd; border-radius: 4px; padding: 8px; font-size: 12px; }"
+                        "QToolButton:hover { border-color: #2f6fbf; background: #eaf2fc; }"
+                        "QListWidget { background: white; border: 1px solid #cfd5dd; font-size: 13px; }"
+                        "QListWidget::item { padding: 6px; }"
+                        "QListWidget::item:hover { background: #eaf2fc; }");
+    auto* h = new QHBoxLayout(page);
+    h->setContentsMargins(40, 30, 40, 30);
+    h->setSpacing(40);
+
+    auto* left = new QVBoxLayout;
+    auto* title = new QLabel("FormWerk");
+    title->setObjectName("Titel");
+    left->addWidget(title);
+    auto* newLabel = new QLabel("Neu");
+    newLabel->setObjectName("Abschnitt");
+    left->addWidget(newLabel);
+    auto bigButton = [](const QIcon& icon, const QString& text) {
+        auto* b = new QToolButton;
+        b->setIcon(icon);
+        b->setIconSize(QSize(48, 48));
+        b->setText(text);
+        b->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
+        b->setFixedSize(120, 100);
+        return b;
+    };
+    auto* row = new QHBoxLayout;
+    auto* bPart = bigButton(makeIcon(Icon::Extrude), "Bauteil");
+    bPart->setToolTip("Neues Bauteil (Strg+N)");
+    connect(bPart, &QToolButton::clicked, this, [this] { cmdNew(); });
+    auto* bDemo = bigButton(makeIcon(Icon::Revolve), "Beispiel");
+    bDemo->setToolTip(QString::fromUtf8("Beispielbauteil öffnen"));
+    connect(bDemo, &QToolButton::clicked, this, [this] { if (maybeSave()) loadDemoPart(); });
+    row->addWidget(bPart);
+    row->addWidget(bDemo);
+    row->addStretch();
+    left->addLayout(row);
+    auto* openLabel = new QLabel(QString::fromUtf8("Öffnen"));
+    openLabel->setObjectName("Abschnitt");
+    left->addWidget(openLabel);
+    auto* row2 = new QHBoxLayout;
+    auto* bOpen = bigButton(makeIcon(Icon::OpenDoc), QString::fromUtf8("Öffnen …"));
+    bOpen->setToolTip(QString::fromUtf8("Bauteil öffnen (Strg+O)"));
+    connect(bOpen, &QToolButton::clicked, this, [this] { cmdOpen(); });
+    row2->addWidget(bOpen);
+    row2->addStretch();
+    left->addLayout(row2);
+    left->addStretch();
+    h->addLayout(left);
+
+    auto* right = new QVBoxLayout;
+    auto* recentLabel = new QLabel("Zuletzt verwendet");
+    recentLabel->setObjectName("Abschnitt");
+    right->addWidget(recentLabel);
+    m_recentList = new QListWidget;
+    m_recentList->setIconSize(QSize(32, 32));
+    connect(m_recentList, &QListWidget::itemActivated, this, [this](QListWidgetItem* it) {
+        const QString path = it->data(Qt::UserRole).toString();
+        if (maybeSave()) openFile(path);
+    });
+    right->addWidget(m_recentList, 1);
+    auto* hintLabel = new QLabel(QString::fromUtf8("Doppelklick öffnet die Datei."));
+    hintLabel->setStyleSheet("color: #6b7380;");
+    right->addWidget(hintLabel);
+    h->addLayout(right, 1);
+    return page;
+}
+
+void MainWindow::refreshHomePage()
+{
+    m_recentList->clear();
+    const QStringList list = QSettings().value("zuletztGeoeffnet").toStringList();
+    for (const QString& path : list) {
+        QFileInfo fi(path);
+        auto* it = new QListWidgetItem(makeIcon(Icon::Extrude),
+            QString("%1\n%2  ·  %3").arg(fi.completeBaseName(), fi.absolutePath(),
+                fi.exists() ? fi.lastModified().toString("dd.MM.yyyy HH:mm") : QString::fromUtf8("nicht gefunden")));
+        it->setData(Qt::UserRole, path);
+        if (!fi.exists()) it->setForeground(Qt::gray);
+        m_recentList->addItem(it);
+    }
+    if (list.isEmpty()) {
+        auto* it = new QListWidgetItem(QString::fromUtf8("Noch keine Dateien geöffnet"));
+        it->setFlags(Qt::NoItemFlags);
+        m_recentList->addItem(it);
+    }
+}
+
+void MainWindow::syncDocTabs(bool home)
+{
+    m_syncingTabs = true;
+    if (m_docOpen && m_docTabs->count() < 2) m_docTabs->addTab(makeIcon(Icon::Extrude), QString());
+    if (!m_docOpen && m_docTabs->count() > 1) m_docTabs->removeTab(1);
+    if (m_docOpen) m_docTabs->setTabText(1, QString::fromStdString(m_doc.name()) + (m_modified ? "*" : ""));
+    m_docTabs->setCurrentIndex(home || !m_docOpen ? 0 : 1);
+    m_syncingTabs = false;
+}
+
+void MainWindow::showHome()
+{
+    if (m_editSketch) finishSketch(true);
+    refreshHomePage();
+    m_stack->setCurrentWidget(m_homePage);
+    m_ribbon->setVisible(false);
+    m_browserDock->setVisible(false);
+    for (QAction* a : m_docActions) a->setEnabled(m_docOpen);
+    syncDocTabs(true);
+    statusBar()->showMessage("Bereit");
+}
+
+void MainWindow::showModel()
+{
+    if (!m_docOpen) { showHome(); return; }
+    m_stack->setCurrentWidget(m_editSketch ? static_cast<QWidget*>(m_canvas) : m_modelPage);
+    m_ribbon->setVisible(true);
+    m_browserDock->setVisible(true);
+    for (QAction* a : m_docActions) a->setEnabled(true);
+    syncDocTabs(false);
+}
+
+void MainWindow::setPageShown(QWidget* page, bool on)
+{
+    const int i = m_ribbon->indexOf(page);
+    if (i >= 0) m_ribbon->setTabVisible(i, on);
+}
+
+void MainWindow::enterPrintEnvironment()
+{
+    if (m_inPrintEnv) { m_ribbon->setCurrentWidget(m_printPage); return; }
+    m_inPrintEnv = true;
+    setPageShown(m_printPage, true);
+    m_ribbon->setCurrentWidget(m_printPage);
+    statusBar()->showMessage(QString::fromUtf8("3D-Druck: Profil wählen, Modifikatoren setzen, slicen · \"3D-Druck beenden\" kehrt zum Modell zurück"), 8000);
+}
+
+void MainWindow::exitPrintEnvironment()
+{
+    if (!m_inPrintEnv) return;
+    m_inPrintEnv = false;
+    if (m_printPreview) setPrintPreview(false);
+    setPageShown(m_printPage, false);
+    m_ribbon->setCurrentWidget(m_modelTabPage);
+}
+
+void MainWindow::setVisualStyle(int style)
+{
+    m_visualStyle = style;
+    m_styleShaded->setChecked(style == 0);
+    m_styleEdges->setChecked(style == 1);
+    m_styleWire->setChecked(style == 2);
+    if (!m_bodyAis.IsNull()) {
+        applyBodyStyle();
+        m_view->redraw();
+    }
+}
+
+void MainWindow::applyBodyStyle()
+{
+    const auto& ctx = m_view->context();
+    if (ctx.IsNull() || m_bodyAis.IsNull()) return;
+    m_bodyAis->Attributes()->SetFaceBoundaryDraw(m_visualStyle == 1);
+    m_bodyAis->SetToUpdate();
+    if (ctx->IsDisplayed(m_bodyAis)) {
+        ctx->SetDisplayMode(m_bodyAis, m_visualStyle == 2 ? AIS_WireFrame : AIS_Shaded, false);
+        ctx->Redisplay(m_bodyAis, false);
+    }
+}
+
+void MainWindow::showViewContextMenu(const QPoint& pos)
+{
+    QMenu menu;
+    menu.addAction(makeIcon(Icon::Sketch), "Neue Skizze", this, [this] { cmdNewSketch(); })->setEnabled(!m_printPreview);
+    menu.addAction(makeIcon(Icon::Extrude), "Extrusion …", this, [this] { cmdExtrude(); })->setEnabled(!m_printPreview);
+    menu.addAction(makeIcon(Icon::Revolve), "Drehung …", this, [this] { cmdRevolve(); })->setEnabled(!m_printPreview);
+    menu.addSeparator();
+    menu.addAction(makeIcon(Icon::Fit), "Alles zoomen", this, [this] { m_view->fitAll(); });
+    menu.addAction(makeIcon(Icon::PrevView), "Vorherige Ansicht", this, [this] { m_view->previousView(); })
+        ->setEnabled(m_view->hasPreviousView());
+    menu.addAction(makeIcon(Icon::Home), "Ausgangsansicht", this, [this] { m_view->homeView(); });
+    menu.addSeparator();
+    if (m_inPrintEnv) menu.addAction(makeIcon(Icon::Close), "3D-Druck beenden", this, [this] { exitPrintEnvironment(); });
+    else menu.addAction(makeIcon(Icon::PrintEnv), "3D-Druck", this, [this] { enterPrintEnvironment(); });
+    menu.exec(pos);
+}
+
+void MainWindow::cmdMeasure()
+{
+    const TopoDS_Shape& body = m_doc.body();
+    if (body.IsNull()) {
+        QMessageBox::information(this, "Physikalische Eigenschaften", QString::fromUtf8("Das Bauteil hat noch keinen Körper."));
+        return;
+    }
+    GProp_GProps vol, surf;
+    BRepGProp::VolumeProperties(body, vol);
+    BRepGProp::SurfaceProperties(body, surf);
+    Bnd_Box box;
+    BRepBndLib::Add(body, box);
+    double x0, y0, z0, x1, y1, z1;
+    box.Get(x0, y0, z0, x1, y1, z1);
+    const gp_Pnt c = vol.CentreOfMass();
+    const double v = vol.Mass();                       // mm³
+    const double grams = v / 1000.0 * m_profile.filamentDensity; // massiv gedruckt
+    QMessageBox::information(this, "Physikalische Eigenschaften",
+        QString::fromUtf8("Volumen: %1 mm³\nOberfläche: %2 mm²\nMasse (massiv, %3 g/cm³): %4 g\n"
+                          "Schwerpunkt: X %5 · Y %6 · Z %7 mm\nAbmessungen: %8 × %9 × %10 mm")
+            .arg(v, 0, 'f', 1).arg(surf.Mass(), 0, 'f', 1)
+            .arg(m_profile.filamentDensity, 0, 'f', 2).arg(grams, 0, 'f', 1)
+            .arg(c.X(), 0, 'f', 2).arg(c.Y(), 0, 'f', 2).arg(c.Z(), 0, 'f', 2)
+            .arg(x1 - x0, 0, 'f', 2).arg(y1 - y0, 0, 'f', 2).arg(z1 - z0, 0, 'f', 2));
 }
 
 void MainWindow::buildRibbon()
 {
     auto act = [this](const QString& text, Icon icon, const QKeySequence& key, auto slot) {
         auto* a = new QAction(makeIcon(icon), text, this);
+        const QString plain = QString(text).replace("-\n", "").replace("\n", " ");
         if (!key.isEmpty()) {
             a->setShortcut(key);
-            a->setToolTip(QString("%1 (%2)").arg(text, key.toString()));
+            a->setToolTip(QString("%1 (%2)").arg(plain, key.toString(QKeySequence::NativeText)));
+        } else {
+            a->setToolTip(plain);
         }
         connect(a, &QAction::triggered, this, slot);
         addAction(a);
@@ -305,24 +652,48 @@ void MainWindow::buildRibbon()
     auto* aRevolve = act("Drehung", Icon::Revolve, QKeySequence("R"), [this] { cmdRevolve(); });
     auto* aHole = act("Bohrung", Icon::Hole, QKeySequence("H"), [this] {
         QMessageBox::information(this, "Bohrung",
-            QString::fromUtf8("Das Bohrungs-Feature folgt im nächsten Schritt.\n"
+            QString::fromUtf8("Das Bohrungs-Feature folgt in einem der nächsten Schritte.\n"
                               "Bis dahin: Kreis in eine Skizze zeichnen und mit \"Differenz\" extrudieren."));
     });
-    auto* aStl = act("STL\nexportieren", Icon::Export, {}, [this] { cmdExportStl(); });
+    auto* aPrintEnv = act("3D-Druck", Icon::PrintEnv, {}, [this] { enterPrintEnvironment(); });
+    aPrintEnv->setToolTip(QString::fromUtf8("3D-Druck-Umgebung: Druckeinstellungen, Modifikatoren, Slicen, G-Code"));
 
-    // --- Ansicht
+    // --- Prüfen / Verwalten
+    auto* aMeasure = act("Physikalische\nEigenschaften", Icon::Measure, {}, [this] { cmdMeasure(); });
+    auto* aUpdate = act("Neu\nerstellen", Icon::Update, QKeySequence("Ctrl+Shift+Q"), [this] { rebuild(); });
+    aUpdate->setToolTip("Alle Features neu berechnen");
+
+    // --- Ansicht und Navigation (Kuerzel wie in Inventor)
     auto* aHome = act("Ausgangs-\nansicht", Icon::Home, QKeySequence(Qt::Key_F6), [this] { m_view->homeView(); });
-    auto* aFit = act("Alles\nzeigen", Icon::Fit, QKeySequence(Qt::Key_Home), [this] { m_view->fitAll(); });
+    auto* aFit = act("Alles\nzoomen", Icon::Fit, QKeySequence(Qt::Key_Home), [this] { m_view->fitAll(); });
+    auto* aPrev = act("Vorherige\nAnsicht", Icon::PrevView, QKeySequence(Qt::Key_F5), [this] { m_view->previousView(); });
+    auto* aPan = act("Pan", Icon::Pan, {}, [this] { m_view->setNavMode(OcctView::NavMode::Pan, true); m_view->setFocus(); });
+    aPan->setToolTip(QString::fromUtf8("Pan (F2 gedrückt halten + linke Maustaste, oder mittlere Maustaste)"));
+    auto* aZoom = act("Zoom", Icon::Zoom, {}, [this] { m_view->setNavMode(OcctView::NavMode::Zoom, true); m_view->setFocus(); });
+    aZoom->setToolTip(QString::fromUtf8("Zoom (F3 gedrückt halten + linke Maustaste, oder Mausrad)"));
+    auto* aOrbit = act("Orbit", Icon::Orbit, {}, [this] { m_view->setNavMode(OcctView::NavMode::Orbit, true); m_view->setFocus(); });
+    aOrbit->setToolTip(QString::fromUtf8("Orbit (F4 gedrückt halten + linke Maustaste, oder Umschalt + mittlere Maustaste)"));
     auto* aTop = act("Oben", Icon::Top, {}, [this] { m_view->setStandardView(V3d_Zpos); });
     auto* aFront = act("Vorne", Icon::Front, {}, [this] { m_view->setStandardView(V3d_Yneg); });
     auto* aRight = act("Rechts", Icon::Right, {}, [this] { m_view->setStandardView(V3d_Xpos); });
+    m_styleShaded = act("Schattiert", Icon::Shaded, {}, [this] { setVisualStyle(0); });
+    m_styleEdges = act("Mit Kanten", Icon::Edges, {}, [this] { setVisualStyle(1); });
+    m_styleWire = act("Drahtkörper", Icon::Wire, {}, [this] { setVisualStyle(2); });
+    for (QAction* a : {m_styleShaded, m_styleEdges, m_styleWire}) a->setCheckable(true);
+    m_styleEdges->setChecked(true);
+    auto* aPersp = act("Perspektive", Icon::Persp, {}, [] {});
+    aPersp->setCheckable(true);
+    connect(aPersp, &QAction::toggled, this, [this](bool on) { m_view->setPerspective(on); });
 
-    // --- Drucken
+    for (QAction* a : {aPan, aZoom, aOrbit, aFit, aPrev, aHome}) m_navBar->addAction(a);
+
+    // --- 3D-Druck (kontextuelles Register der Umgebung)
     auto* aSlice = act("Slicen", Icon::Slice, QKeySequence("Ctrl+R"), [this] { cmdSlice(); });
     m_previewAction = act("Druck-\nvorschau", Icon::Preview, {}, [this] { setPrintPreview(!m_printPreview); });
     m_previewAction->setCheckable(true);
     auto* aSave = act("G-Code\nspeichern", Icon::Save, QKeySequence("Ctrl+G"), [this] { cmdSaveGcode(); });
     auto* aSettings = act("Druckein-\nstellungen", Icon::Settings, {}, [this] { cmdPrintSettings(); });
+    auto* aExitPrint = act("3D-Druck\nbeenden", Icon::Close, {}, [this] { exitPrintEnvironment(); });
 
     auto* aEvent = act("Ereignis", Icon::Pause, {}, [this] { cmdAddEventAtLayer(); });
     aEvent->setToolTip(QString::fromUtf8("Pause, Filamentwechsel, Temperatur o. Ä. ab der angezeigten Schicht einfügen"));
@@ -334,15 +705,18 @@ void MainWindow::buildRibbon()
     aEnforce->setIcon(modifierIcon(QColor(40, 170, 200)));
     aBlock->setIcon(modifierIcon(QColor(210, 70, 60)));
 
-    m_modelActions = {aZone, aEnforce, aBlock, aSketch, aExtrude, aRevolve, aHole, aStl, aSlice, m_previewAction, aSave, aSettings, aEvent};
+    m_modelActions = {aZone, aEnforce, aBlock, aSketch, aExtrude, aRevolve, aHole, aSlice, m_previewAction, aSave,
+                      aSettings, aEvent, aPrintEnv, aMeasure, aUpdate, aExitPrint};
+    m_docActions = {aSketch, aExtrude, aRevolve, aHole, aPrintEnv, aMeasure, aUpdate, aHome, aFit, aPrev, aPan, aZoom, aOrbit,
+                    aTop, aFront, aRight, aSlice, aSave, aEvent, aZone, aEnforce, aBlock, m_previewAction};
 
-    // --- Skizze (nur im Skizzenmodus sichtbar)
+    // --- Skizze (kontextuelles Register, nur im Skizzenmodus sichtbar)
     auto* toolGroup = new QActionGroup(this);
     auto tool = [this, toolGroup](const QString& text, const QIcon& icon, SketchCanvas::Tool t, const QString& key = {}) {
         auto* a = new QAction(icon, text, this);
         a->setCheckable(true);
         a->setData(static_cast<int>(t));
-        a->setToolTip(key.isEmpty() ? text : QString("%1 (%2)").arg(QString(text).replace("\n", " "), key));
+        a->setToolTip(key.isEmpty() ? QString(text).replace("\n", " ") : QString("%1 (%2)").arg(QString(text).replace("\n", " "), key));
         toolGroup->addAction(a);
         connect(a, &QAction::triggered, this, [this, t] { m_canvas->setTool(t); m_canvas->setFocus(); });
         m_sketchToolActions.push_back(a);
@@ -405,39 +779,44 @@ void MainWindow::buildRibbon()
 
     m_ribbon = new QTabWidget;
     m_ribbon->setDocumentMode(true);
-    m_ribbon->addTab(makeRibbonPage({makePanel("Skizze", {aSketch}),
-                                     makePanel("Erstellen", {aExtrude, aRevolve}),
-                                     makePanel("Ändern", {aHole}),
-                                     makePanel("Exportieren", {aStl})}),
-                     "3D-Modell");
-    m_ribbon->addTab(makeRibbonPage({makePanel("Navigieren", {aHome, aFit}),
-                                     makePanel("Ansichten", {aTop, aFront, aRight})}),
-                     "Ansicht");
+
+    // Kontextuelle Register stehen wie in Inventor ganz vorne
+    m_sketchPage = makeRibbonPage({makePanel("Erstellen", {sSelect, sLine, sRect, sCircle, sArc}),
+                                   makePanel("Bemaßung", {sDim}),
+                                   makePanel("Abhängig machen", {cCoin, cH, cV, cPar, cPerp, cTan, cEq, cFix, cMid}),
+                                   makePanel("Format", {sConstr, sShow}),
+                                   makePanel("Beenden", {sFinish, sCancel})});
+    m_ribbon->addTab(m_sketchPage, "Skizze");
+
     m_profileLabel = new QLabel;
     m_profileLabel->setWordWrap(true);
     m_profileLabel->setMaximumWidth(170);
     m_profileLabel->setStyleSheet("font-size: 11px;");
     auto* printerPanel = makePanel(QString::fromUtf8("Creality Ender 3 V2"), {aSettings, aSlice});
     static_cast<QHBoxLayout*>(static_cast<QVBoxLayout*>(printerPanel->layout())->itemAt(0)->layout())->insertWidget(0, m_profileLabel);
-    m_ribbon->addTab(makeRibbonPage({printerPanel,
-                                     makePanel("Modifikatoren", {aZone, aEnforce, aBlock}),
-                                     makePanel("Ergebnis", {m_previewAction, aSave}), layerPanel}),
-                     "3D-Druck");
-    m_ribbon->addTab(makeRibbonPage({makePanel("Zeichnen", {sSelect, sLine, sRect, sCircle, sArc}),
-                                     makePanel("Bemaßen", {sDim}),
-                                     makePanel("Abhängigkeiten", {cCoin, cH, cV, cPar, cPerp, cTan, cEq, cFix, cMid}),
-                                     makePanel("Format", {sConstr, sShow}),
-                                     makePanel("Beenden", {sFinish, sCancel})}),
-                     "Skizze");
-    m_ribbon->setTabVisible(kSketchTab, false);
+    m_printPage = makeRibbonPage({printerPanel,
+                                  makePanel("Modifikatoren", {aZone, aEnforce, aBlock}),
+                                  makePanel("Ergebnis", {m_previewAction, aSave}), layerPanel,
+                                  makePanel("Beenden", {aExitPrint})});
+    m_ribbon->addTab(m_printPage, "3D-Druck");
+
+    m_modelTabPage = makeRibbonPage({makePanel("Skizze", {aSketch}),
+                                     makePanel("Erstellen", {aExtrude, aRevolve}),
+                                     makePanel("Ändern", {aHole})});
+    m_ribbon->addTab(m_modelTabPage, "3D-Modell");
+    m_ribbon->addTab(makeRibbonPage({makePanel("Messen", {aMeasure})}), QString::fromUtf8("Prüfen"));
+    m_ribbon->addTab(makeRibbonPage({makePanel("Aktualisieren", {aUpdate})}), "Verwalten");
+    m_ribbon->addTab(makeRibbonPage({makePanel("Darstellung", {m_styleShaded, m_styleEdges, m_styleWire, aPersp}),
+                                     makePanel("Navigieren", {aPan, aZoom, aOrbit, aFit, aPrev, aHome}),
+                                     makePanel("Ansichten", {aTop, aFront, aRight})}),
+                     "Ansicht");
+    m_ribbon->addTab(makeRibbonPage({makePanel("Fertigung", {aPrintEnv})}), "Umgebungen");
+
+    setPageShown(m_sketchPage, false);
+    setPageShown(m_printPage, false);
+    m_ribbon->setCurrentWidget(m_modelTabPage);
     m_ribbon->setFixedHeight(118);
     m_ribbon->setStyleSheet("QTabWidget::pane { background: #f4f6f9; border-bottom: 1px solid #c8cdd5; }");
-
-    auto* tb = new QToolBar("Multifunktionsleiste");
-    tb->setMovable(false);
-    tb->setFloatable(false);
-    tb->addWidget(m_ribbon);
-    addToolBar(Qt::TopToolBarArea, tb);
 }
 
 void MainWindow::buildFileMenu()
@@ -448,25 +827,28 @@ void MainWindow::buildFileMenu()
     fileButton->setStyleSheet("QToolButton { background: #2f6fbf; color: white; padding: 3px 14px; font-weight: bold; border: none; }"
                               "QToolButton::menu-indicator { image: none; }");
     auto* menu = new QMenu(fileButton);
-    auto add = [this, menu](const QString& text, const QKeySequence& key, auto slot) {
-        QAction* a = menu->addAction(text, this, slot);
+    auto add = [this, menu](const QIcon& icon, const QString& text, const QKeySequence& key, auto slot) {
+        QAction* a = menu->addAction(icon, text, this, slot);
         a->setShortcut(key);
         addAction(a);
         return a;
     };
-    add("Neu", QKeySequence::New, [this] { cmdNew(); });
-    add(QString::fromUtf8("Öffnen …"), QKeySequence::Open, [this] { cmdOpen(); });
-    m_recentMenu = menu->addMenu(QString::fromUtf8("Zuletzt geöffnet"));
+    auto* aNew = add(makeIcon(Icon::NewDoc), "Neu", QKeySequence::New, [this] { cmdNew(); });
+    auto* aOpen = add(makeIcon(Icon::OpenDoc), QString::fromUtf8("Öffnen …"), QKeySequence::Open, [this] { cmdOpen(); });
+    m_recentMenu = menu->addMenu(QString::fromUtf8("Zuletzt verwendet"));
     menu->addSeparator();
-    add("Speichern", QKeySequence::Save, [this] { cmdSave(); });
-    add("Speichern unter …", QKeySequence("Ctrl+Shift+S"), [this] { cmdSaveAs(); });
+    auto* aSave = add(makeIcon(Icon::Disk), "Speichern", QKeySequence::Save, [this] { cmdSave(); });
+    auto* aSaveAs = add(QIcon(), "Speichern unter …", QKeySequence("Ctrl+Shift+S"), [this] { cmdSaveAs(); });
     menu->addSeparator();
-    add("STL exportieren …", {}, [this] { cmdExportStl(); });
-    add("G-Code speichern …", {}, [this] { cmdSaveGcode(); });
+    auto* exportMenu = menu->addMenu(makeIcon(Icon::Export), "Exportieren");
+    QAction* aStl = exportMenu->addAction("STL-Datei …", this, [this] { cmdExportStl(); });
+    QAction* aGcode = exportMenu->addAction("G-Code …", this, [this] { cmdSaveGcode(); });
     menu->addSeparator();
-    add("Beenden", QKeySequence("Ctrl+Q"), [this] { close(); });
+    auto* aClose = add(makeIcon(Icon::Close), QString::fromUtf8("Schließen"), QKeySequence("Ctrl+W"), [this] { cmdCloseDoc(); });
+    add(QIcon(), "Beenden", QKeySequence("Ctrl+Q"), [this] { close(); });
     fileButton->setMenu(menu);
     updateRecentMenu();
+    for (QAction* a : {aSave, aSaveAs, aStl, aGcode, aClose}) m_docActions.push_back(a);
 
     m_undoAction = new QAction(style()->standardIcon(QStyle::SP_ArrowBack), QString::fromUtf8("Rückgängig"), this);
     m_undoAction->setShortcut(QKeySequence::Undo);
@@ -478,18 +860,46 @@ void MainWindow::buildFileMenu()
     m_redoAction->setToolTip("Wiederholen (Strg+Y)");
     connect(m_redoAction, &QAction::triggered, this, [this] { cmdRedo(); });
     addAction(m_redoAction);
+    auto* aHomePage = new QAction(makeIcon(Icon::Home), "Startseite", this);
+    aHomePage->setToolTip("Startseite");
+    connect(aHomePage, &QAction::triggered, this, [this] { showHome(); });
+
+    // Schnellzugriff-Werkzeugkasten oberhalb der Register
+    auto* quick = new QWidget;
+    quick->setObjectName("Schnellzugriff");
+    quick->setStyleSheet("#Schnellzugriff { background: #dde3ea; border-bottom: 1px solid #c3cad3; }"
+                         "QToolButton { border: none; padding: 1px; } QToolButton:hover { background: #c9d3de; }");
+    auto* qh = new QHBoxLayout(quick);
+    qh->setContentsMargins(6, 1, 6, 1);
+    qh->setSpacing(1);
+    auto* appLabel = new QLabel("<b>FormWerk</b>");
+    appLabel->setStyleSheet("color: #26364d; padding-right: 8px;");
+    qh->addWidget(appLabel);
+    for (QAction* a : {aHomePage, aNew, aOpen, aSave, m_undoAction, m_redoAction}) {
+        auto* b = new QToolButton;
+        b->setDefaultAction(a);
+        b->setIconSize(QSize(18, 18));
+        b->setToolTip(a->toolTip().isEmpty() ? a->text() : a->toolTip());
+        qh->addWidget(b);
+    }
+    qh->addStretch();
+    m_titleLabel = new QLabel;
+    m_titleLabel->setStyleSheet("color: #3b4656;");
+    qh->addWidget(m_titleLabel);
+    qh->addStretch();
+
+    auto* top = new QWidget;
+    auto* tv = new QVBoxLayout(top);
+    tv->setContentsMargins(0, 0, 0, 0);
+    tv->setSpacing(0);
+    tv->addWidget(quick);
+    tv->addWidget(m_ribbon);
+    setMenuWidget(top);
 
     auto* corner = new QWidget;
     auto* h = new QHBoxLayout(corner);
     h->setContentsMargins(0, 0, 8, 0);
-    h->setSpacing(2);
     h->addWidget(fileButton);
-    for (QAction* a : {m_undoAction, m_redoAction}) {
-        auto* b = new QToolButton;
-        b->setDefaultAction(a);
-        b->setAutoRaise(true);
-        h->addWidget(b);
-    }
     m_ribbon->setCornerWidget(corner, Qt::TopLeftCorner);
     updateTitle();
 }
@@ -530,7 +940,7 @@ void MainWindow::buildBrowser()
         menu.exec(m_browser->viewport()->mapToGlobal(pos));
     });
 
-    auto* dock = new QDockWidget("Modell", this);
+    auto* dock = m_browserDock = new QDockWidget("Modell", this);
     dock->setObjectName("Modellbrowser");
     dock->setWidget(m_browser);
     dock->setFeatures(QDockWidget::DockWidgetMovable);
@@ -540,6 +950,9 @@ void MainWindow::buildBrowser()
 void MainWindow::loadDemoPart()
 {
     // Beispielteil: Platte mit Bohrung und aufgesetztem Zapfen
+    m_doc.clear("Beispiel");
+    m_filePath.clear();
+    m_slice = fw::SliceResult{};
     auto sk1 = std::make_shared<fw::Sketch>("Skizze1", fw::SketchPlane::XY);
     sk1->addRectangle(0, 0, 60, 40);
     sk1->addCircle(15, 20, 6);
@@ -552,7 +965,10 @@ void MainWindow::loadDemoPart()
     m_doc.addFeature(std::make_shared<fw::ExtrudeFeature>("Extrusion2", sk2, 15.0));
 
     resetHistory();
-    QTimer::singleShot(150, this, [this] { rebuild(true); });
+    m_docOpen = true;
+    m_modified = false;
+    showModel();
+    QTimer::singleShot(150, this, [this] { rebuild(true); m_modified = false; updateTitle(); });
 }
 
 std::vector<fw::SketchPtr> MainWindow::sketches() const
@@ -601,10 +1017,10 @@ void MainWindow::rebuild(bool fit)
         m_bodyAis = new AIS_Shape(m_doc.body());
         m_bodyAis->SetColor(Quantity_Color(0.72, 0.76, 0.82, Quantity_TOC_sRGB));
         m_bodyAis->SetMaterial(Graphic3d_NameOfMaterial_Steel);
-        m_bodyAis->Attributes()->SetFaceBoundaryDraw(true);
+        m_bodyAis->Attributes()->SetFaceBoundaryDraw(m_visualStyle == 1);
         m_bodyAis->Attributes()->SetFaceBoundaryAspect(
             new Prs3d_LineAspect(Quantity_NOC_GRAY15, Aspect_TOL_SOLID, 1.0));
-        ctx->Display(m_bodyAis, AIS_Shaded, 0, false);
+        ctx->Display(m_bodyAis, m_visualStyle == 2 ? AIS_WireFrame : AIS_Shaded, 0, false);
     }
 
     // Skizzen nur anzeigen, solange sie von keinem Feature verbraucht werden (wie in Inventor)
@@ -677,6 +1093,8 @@ void MainWindow::refreshBrowser()
             it->setToolTip(0, QString::fromStdString(m_doc.errorMessage()));
         }
     }
+    auto* endItem = new QTreeWidgetItem(root, {"Bauteilende"});
+    endItem->setIcon(0, makeIcon(Icon::EndOfPart));
     if (!m_doc.modifiers().empty()) {
         auto* modRoot = new QTreeWidgetItem(root, {"Druck-Modifikatoren"});
         modRoot->setIcon(0, makeIcon(Icon::Slice));
@@ -712,9 +1130,10 @@ void MainWindow::enterSketch(const fw::SketchPtr& sketch, bool isNew)
     for (QAction* a : m_modelActions) a->setEnabled(false);
     m_undoAction->setEnabled(false);
     m_redoAction->setEnabled(false);
-    m_ribbon->setTabVisible(kSketchTab, true);
-    for (int i = 0; i < m_ribbon->count(); ++i) m_ribbon->setTabEnabled(i, i == kSketchTab);
-    m_ribbon->setCurrentIndex(kSketchTab);
+    setPageShown(m_sketchPage, true);
+    const int si = m_ribbon->indexOf(m_sketchPage);
+    for (int i = 0; i < m_ribbon->count(); ++i) m_ribbon->setTabEnabled(i, i == si);
+    m_ribbon->setCurrentWidget(m_sketchPage);
     m_stack->setCurrentWidget(m_canvas);
     m_canvas->begin(*sketch);
     m_canvas->setFocus();
@@ -728,11 +1147,11 @@ void MainWindow::finishSketch(bool accept)
     m_editSketch.reset();
     for (QAction* a : m_modelActions) a->setEnabled(true);
     for (int i = 0; i < m_ribbon->count(); ++i) m_ribbon->setTabEnabled(i, true);
-    m_ribbon->setTabVisible(kSketchTab, false);
-    m_ribbon->setCurrentIndex(0);
-    m_stack->setCurrentWidget(m_view);
+    setPageShown(m_sketchPage, false);
+    m_ribbon->setCurrentWidget(m_inPrintEnv ? m_printPage : m_modelTabPage);
+    m_stack->setCurrentWidget(m_modelPage);
     m_browser->setEnabled(true);
-    statusBar()->clearMessage();
+    statusBar()->showMessage("Bereit");
 
     if (accept) {
         sketch->geometry() = m_canvas->geometry();
@@ -888,7 +1307,7 @@ void MainWindow::sliceFinished()
         for (const auto& s : m_slice.warnings) w << QString::fromUtf8(s.c_str());
         QMessageBox::information(this, "Slicen", w.join("\n"));
     }
-    m_ribbon->setCurrentIndex(2);
+    enterPrintEnvironment();
     if (m_printPreview) setPrintPreview(false);
     setPrintPreview(true);
     if (then) then();
@@ -957,7 +1376,7 @@ void MainWindow::setPrintPreview(bool on)
         m_previewAis.Nullify();
         if (!m_bedAis.IsNull()) ctx->Erase(m_bedAis, false);
         displayModifiers(gp_Vec());
-        if (!m_bodyAis.IsNull()) ctx->Display(m_bodyAis, AIS_Shaded, 0, false);
+        if (!m_bodyAis.IsNull()) ctx->Display(m_bodyAis, m_visualStyle == 2 ? AIS_WireFrame : AIS_Shaded, 0, false);
         for (auto& s : m_sketchAis) ctx->Display(s, AIS_WireFrame, -1, false);
         m_layerLabel->setText("Schicht: –");
         m_view->fitAll();
@@ -1010,7 +1429,15 @@ void MainWindow::resetHistory()
 void MainWindow::updateTitle()
 {
     const QString name = m_filePath.isEmpty() ? QString::fromStdString(m_doc.name()) : QFileInfo(m_filePath).fileName();
-    setWindowTitle(QString("%1%2 – FormWerk").arg(name, m_modified ? "*" : ""));
+    if (!m_docOpen) {
+        setWindowTitle("FormWerk");
+        if (m_titleLabel) m_titleLabel->setText(QString());
+    } else {
+        setWindowTitle(QString("%1%2 – FormWerk").arg(name, m_modified ? "*" : ""));
+        if (m_titleLabel) m_titleLabel->setText(QString("%1%2").arg(name, m_modified ? "*" : ""));
+    }
+    if (m_docTabs && m_docTabs->count() > 1)
+        m_docTabs->setTabText(1, QString::fromStdString(m_doc.name()) + (m_modified ? "*" : ""));
     if (m_undoAction) m_undoAction->setEnabled(!m_undo.empty() && !m_editSketch);
     if (m_redoAction) m_redoAction->setEnabled(!m_redo.empty() && !m_editSketch);
 }
@@ -1043,7 +1470,7 @@ void MainWindow::restoreText(const std::string& text)
 
 bool MainWindow::maybeSave()
 {
-    if (!m_modified) return true;
+    if (!m_docOpen || !m_modified) return true;
     const auto answer = QMessageBox::question(this, "FormWerk",
         QString::fromUtf8("Änderungen an \"%1\" speichern?").arg(QString::fromStdString(m_doc.name())),
         QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Save);
@@ -1059,9 +1486,27 @@ void MainWindow::cmdNew()
     m_filePath.clear();
     m_slice = fw::SliceResult{};
     resetHistory();
-    rebuild(true);
+    m_docOpen = true;
+    m_modified = false;
+    showModel();
+    QTimer::singleShot(0, this, [this] { rebuild(true); m_modified = false; updateTitle(); });
+}
+
+void MainWindow::cmdCloseDoc()
+{
+    if (!m_docOpen || !maybeSave()) return;
+    if (m_editSketch) finishSketch(false);
+    exitPrintEnvironment();
+    m_doc.clear("Bauteil1");
+    m_filePath.clear();
+    m_slice = fw::SliceResult{};
+    resetHistory();
+    m_docOpen = false;
+    m_modified = false;
+    rebuild();
     m_modified = false;
     updateTitle();
+    showHome();
 }
 
 void MainWindow::cmdOpen()
@@ -1082,11 +1527,15 @@ bool MainWindow::openFile(const QString& path)
             QString::fromUtf8("Die Datei konnte nicht gelesen werden.\n%1").arg(QString::fromStdString(err)));
         return false;
     }
+    if (m_editSketch) finishSketch(false);
+    exitPrintEnvironment();
     m_doc.fromText(tmp.toText());
     m_filePath = path;
     m_slice = fw::SliceResult{};
     resetHistory();
-    rebuild(true);
+    m_docOpen = true;
+    showModel();
+    QTimer::singleShot(0, this, [this] { rebuild(true); });
     m_modified = false;
     updateTitle();
     addRecent(path);
@@ -1141,6 +1590,7 @@ void MainWindow::addRecent(const QString& path)
     s.setValue("zuletztGeoeffnet", list);
     s.setValue("letzterOrdner", QFileInfo(path).absolutePath());
     updateRecentMenu();
+    if (m_recentList) refreshHomePage();
 }
 
 void MainWindow::updateRecentMenu()
