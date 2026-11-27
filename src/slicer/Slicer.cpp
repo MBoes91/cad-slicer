@@ -1,0 +1,341 @@
+#include "slicer/Slicer.h"
+#include "slicer/GcodeWriter.h"
+
+#include <clipper.hpp>
+
+#include <BRepBndLib.hxx>
+#include <BRepBuilderAPI_Transform.hxx>
+#include <Bnd_Box.hxx>
+#include <Standard_Failure.hxx>
+
+#include <algorithm>
+#include <cmath>
+#include <iomanip>
+#include <sstream>
+
+namespace fw {
+
+namespace {
+
+using ClipperLib::IntPoint;
+using ClipperLib::Path;
+using ClipperLib::Paths;
+
+constexpr double kScale = 1000.0; // Clipper rechnet ganzzahlig in Mikrometern
+
+Path toPath(const Polygon2& poly)
+{
+    Path p;
+    p.reserve(poly.size());
+    for (const auto& v : poly)
+        p.emplace_back(std::llround(v.x * kScale), std::llround(v.y * kScale));
+    return p;
+}
+
+Polygon2 toPoly(const Path& p)
+{
+    Polygon2 poly;
+    poly.reserve(p.size());
+    for (const auto& v : p) poly.push_back({v.X / kScale, v.Y / kScale});
+    return poly;
+}
+
+Paths offset(const Paths& in, double deltaMm)
+{
+    Paths out;
+    ClipperLib::ClipperOffset co(2.0, 0.25 * kScale / 100.0);
+    co.AddPaths(in, ClipperLib::jtMiter, ClipperLib::etClosedPolygon);
+    co.Execute(out, deltaMm * kScale);
+    return out;
+}
+
+Paths boolean(const Paths& a, const Paths& b, ClipperLib::ClipType type)
+{
+    Paths out;
+    ClipperLib::Clipper c;
+    c.AddPaths(a, ClipperLib::ptSubject, true);
+    c.AddPaths(b, ClipperLib::ptClip, true);
+    c.Execute(type, out, ClipperLib::pftNonZero, ClipperLib::pftNonZero);
+    return out;
+}
+
+// Parallele Fuellinien im Abstand spacing unter dem Winkel angleDeg,
+// beschnitten auf die Region. Das Linienraster ist global ausgerichtet,
+// damit duenne Fuellung ueber die Schichten fluchtet.
+std::vector<Polygon2> lineFill(const Paths& region, double spacing, double angleDeg)
+{
+    std::vector<Polygon2> result;
+    if (region.empty() || spacing <= 0) return result;
+
+    const double a = angleDeg * M_PI / 180.0;
+    const double ca = std::cos(a), sa = std::sin(a);
+
+    // Region um -a drehen, dann waagrechte Linien erzeugen
+    Paths rotated;
+    ClipperLib::cInt minX = 0, maxX = 0, minY = 0, maxY = 0;
+    bool first = true;
+    for (const auto& p : region) {
+        Path rp;
+        for (const auto& v : p) {
+            const double x = v.X, y = v.Y;
+            IntPoint q(std::llround(x * ca + y * sa), std::llround(-x * sa + y * ca));
+            if (first) { minX = maxX = q.X; minY = maxY = q.Y; first = false; }
+            minX = std::min(minX, q.X); maxX = std::max(maxX, q.X);
+            minY = std::min(minY, q.Y); maxY = std::max(maxY, q.Y);
+            rp.push_back(q);
+        }
+        rotated.push_back(rp);
+    }
+
+    const double step = spacing * kScale;
+    Paths lines;
+    for (double y = std::ceil(minY / step) * step; y <= maxY; y += step) {
+        const auto yi = static_cast<ClipperLib::cInt>(std::llround(y));
+        lines.push_back({IntPoint(minX - 10, yi), IntPoint(maxX + 10, yi)});
+    }
+
+    ClipperLib::Clipper c;
+    c.AddPaths(lines, ClipperLib::ptSubject, false);
+    c.AddPaths(rotated, ClipperLib::ptClip, true);
+    ClipperLib::PolyTree tree;
+    c.Execute(ClipperLib::ctIntersection, tree, ClipperLib::pftNonZero, ClipperLib::pftNonZero);
+    Paths open;
+    ClipperLib::OpenPathsFromPolyTree(tree, open);
+
+    for (const auto& p : open) {
+        Polygon2 poly;
+        for (const auto& v : p) {
+            const double x = v.X, y = v.Y;
+            poly.push_back({(x * ca - y * sa) / kScale, (x * sa + y * ca) / kScale});
+        }
+        if (poly.size() >= 2) result.push_back(std::move(poly));
+    }
+    return result;
+}
+
+double dist2(const Vec2& a, const Vec2& b)
+{
+    return (a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y);
+}
+
+// Ordnet offene Linien gierig nach kuerzestem Leerweg (inkl. Umdrehen).
+void orderLines(std::vector<Polygon2>& lines, Vec2 pos)
+{
+    std::vector<Polygon2> ordered;
+    ordered.reserve(lines.size());
+    std::vector<bool> used(lines.size(), false);
+    for (size_t n = 0; n < lines.size(); ++n) {
+        size_t best = 0; bool rev = false; double bestD = 1e300;
+        for (size_t i = 0; i < lines.size(); ++i) {
+            if (used[i]) continue;
+            const double d1 = dist2(pos, lines[i].front()), d2 = dist2(pos, lines[i].back());
+            if (d1 < bestD) { bestD = d1; best = i; rev = false; }
+            if (d2 < bestD) { bestD = d2; best = i; rev = true; }
+        }
+        used[best] = true;
+        Polygon2 l = std::move(lines[best]);
+        if (rev) std::reverse(l.begin(), l.end());
+        pos = l.back();
+        ordered.push_back(std::move(l));
+    }
+    lines = std::move(ordered);
+}
+
+// Dreht eine geschlossene Kontur so, dass sie am Punkt naechst pos beginnt.
+void rotateLoopTo(Polygon2& loop, const Vec2& pos)
+{
+    size_t best = 0; double bestD = 1e300;
+    for (size_t i = 0; i < loop.size(); ++i) {
+        const double d = dist2(loop[i], pos);
+        if (d < bestD) { bestD = d; best = i; }
+    }
+    std::rotate(loop.begin(), loop.begin() + static_cast<long>(best), loop.end());
+}
+
+void addLoops(std::vector<ToolPath>& out, const Paths& paths, PathType type)
+{
+    for (const auto& p : paths)
+        if (p.size() >= 3) out.push_back({type, toPoly(p), true});
+}
+
+} // namespace
+
+SliceResult slice(const TopoDS_Shape& bodyIn, const PrinterProfile& pp)
+{
+    SliceResult res;
+    if (bodyIn.IsNull()) { res.error = "Kein Koerper zum Slicen vorhanden"; return res; }
+
+    try {
+        // --- Teil auf dem Bett platzieren ------------------------------------
+        Bnd_Box box;
+        BRepBndLib::Add(bodyIn, box);
+        double x0, y0, z0, x1, y1, z1;
+        box.Get(x0, y0, z0, x1, y1, z1);
+        res.sizeX = x1 - x0; res.sizeY = y1 - y0; res.sizeZ = z1 - z0;
+        const double margin = pp.skirtDistance + pp.skirtLoops * pp.lineWidth;
+        if (res.sizeX + 2 * margin > pp.bedX || res.sizeY + 2 * margin > pp.bedY || res.sizeZ > pp.maxZ) {
+            std::ostringstream s;
+            s << std::fixed << std::setprecision(1) << "Teil (" << res.sizeX << " x " << res.sizeY << " x " << res.sizeZ
+              << " mm) passt nicht in den Bauraum (" << pp.bedX << " x " << pp.bedY << " x " << pp.maxZ << " mm)";
+            res.error = s.str();
+            return res;
+        }
+        gp_Trsf move;
+        move.SetTranslation(gp_Vec(pp.bedX / 2 - (x0 + x1) / 2, pp.bedY / 2 - (y0 + y1) / 2, -z0));
+        const TopoDS_Shape body = BRepBuilderAPI_Transform(bodyIn, move, true).Shape();
+
+        const std::vector<Triangle> tris = triangulate(body);
+        if (tris.empty()) { res.error = "Triangulierung fehlgeschlagen"; return res; }
+
+        // --- Schichtkonturen ----------------------------------------------------
+        std::vector<double> tops;
+        for (double z = pp.firstLayerHeight; z <= res.sizeZ + 1e-6; z += pp.layerHeight) tops.push_back(z);
+        if (tops.empty()) { res.error = "Teil ist niedriger als eine Schicht"; return res; }
+
+        const size_t n = tops.size();
+        std::vector<Paths> region(n);
+        for (size_t i = 0; i < n; ++i) {
+            const double h = i == 0 ? pp.firstLayerHeight : pp.layerHeight;
+            const double zMid = tops[i] - h / 2.0;
+            Paths raw;
+            for (const auto& loop : sliceAt(tris, zMid)) raw.push_back(toPath(loop));
+            ClipperLib::Clipper c;
+            c.AddPaths(raw, ClipperLib::ptSubject, true);
+            c.Execute(ClipperLib::ctUnion, region[i], ClipperLib::pftEvenOdd, ClipperLib::pftEvenOdd);
+            ClipperLib::CleanPolygons(region[i], 0.005 * kScale);
+        }
+
+        const double w = pp.lineWidth;
+        std::vector<Paths> inner(n);
+        for (size_t i = 0; i < n; ++i)
+            inner[i] = offset(region[i], -(pp.perimeters * w - pp.infillOverlap * w));
+
+        // --- Werkzeugwege je Schicht -------------------------------------------
+        res.layers.resize(n);
+        for (size_t i = 0; i < n; ++i) {
+            SlicedLayer& L = res.layers[i];
+            L.z = tops[i];
+            L.height = i == 0 ? pp.firstLayerHeight : pp.layerHeight;
+
+            if (i == 0 && pp.skirtLoops > 0) {
+                for (int k = pp.skirtLoops - 1; k >= 0; --k) {
+                    Paths sk = offset(region[0], pp.skirtDistance + k * w);
+                    // nur die aeussere Huelle
+                    Paths outer;
+                    for (auto& p : sk) if (ClipperLib::Orientation(p)) outer.push_back(p);
+                    addLoops(L.paths, outer, PathType::Skirt);
+                }
+            }
+
+            // Waende von innen nach aussen
+            for (int k = pp.perimeters - 1; k >= 0; --k)
+                addLoops(L.paths, offset(region[i], -(w / 2 + k * w)),
+                         k == 0 ? PathType::OuterWall : PathType::InnerWall);
+
+            // Massive Bereiche: nicht von allen Nachbarschichten ueberdeckt
+            Paths covered;
+            bool firstCover = true;
+            auto cover = [&](long j) {
+                const Paths& other = (j < 0 || j >= static_cast<long>(n)) ? Paths{} : region[j];
+                if (firstCover) { covered = other; firstCover = false; }
+                else covered = boolean(covered, other, ClipperLib::ctIntersection);
+            };
+            for (int k = 1; k <= pp.bottomLayers; ++k) cover(static_cast<long>(i) - k);
+            for (int k = 1; k <= pp.topLayers; ++k) cover(static_cast<long>(i) + k);
+
+            Paths solid = firstCover ? Paths{} : boolean(inner[i], covered, ClipperLib::ctDifference);
+            Paths sparse = boolean(inner[i], solid, ClipperLib::ctDifference);
+            const double angle = (i % 2 == 0) ? 45.0 : -45.0;
+
+            auto solidLines = lineFill(solid, w, angle);
+            for (auto& l : solidLines) L.paths.push_back({PathType::Solid, std::move(l), false});
+            if (pp.infillDensity > 0.001) {
+                auto infill = lineFill(sparse, w / pp.infillDensity, angle);
+                for (auto& l : infill) L.paths.push_back({PathType::Infill, std::move(l), false});
+            }
+        }
+
+        // --- G-Code --------------------------------------------------------------
+        GcodeWriter g(pp);
+        g.comment("Erzeugt mit FormWerk");
+        {
+            std::ostringstream s;
+            s << std::fixed << std::setprecision(2) << "Schichthoehe: " << pp.layerHeight << " mm, Schichten: " << n;
+            g.comment(s.str());
+        }
+        g.startGcode();
+        g.comment("LAYER_COUNT:" + std::to_string(n));
+
+        for (size_t i = 0; i < n; ++i) {
+            SlicedLayer& L = res.layers[i];
+            g.comment("LAYER:" + std::to_string(i));
+            g.retract();
+            g.moveZ(L.z);
+            if (static_cast<int>(i) + 1 == pp.fanFromLayer) g.setFan(pp.fanPercent);
+
+            // Reihenfolge innerhalb der Typen nach Leerweg optimieren
+            std::vector<ToolPath> ordered;
+            Vec2 pos{g.x(), g.y()};
+            for (PathType t : {PathType::Skirt, PathType::InnerWall, PathType::OuterWall, PathType::Solid, PathType::Infill}) {
+                std::vector<Polygon2> loops, lines;
+                for (auto& tp : L.paths)
+                    if (tp.type == t) (tp.closed ? loops : lines).push_back(tp.points);
+                std::vector<bool> used(loops.size(), false);
+                for (size_t c = 0; c < loops.size(); ++c) {
+                    size_t best = 0; double bestD = 1e300;
+                    for (size_t j = 0; j < loops.size(); ++j) {
+                        if (used[j]) continue;
+                        for (const auto& v : loops[j]) {
+                            const double d = dist2(v, pos);
+                            if (d < bestD) { bestD = d; best = j; }
+                        }
+                    }
+                    used[best] = true;
+                    rotateLoopTo(loops[best], pos);
+                    pos = loops[best].front();
+                    ordered.push_back({t, loops[best], true});
+                }
+                orderLines(lines, pos);
+                if (!lines.empty()) pos = lines.back().back();
+                for (auto& l : lines) ordered.push_back({t, std::move(l), false});
+            }
+            L.paths = std::move(ordered);
+
+            PathType current = PathType::Infill;
+            bool firstPath = true;
+            for (const auto& tp : L.paths) {
+                if (firstPath || tp.type != current) {
+                    static const char* names[] = {"SKIRT", "WALL-OUTER", "WALL-INNER", "SKIN", "FILL"};
+                    g.comment(std::string("TYPE:") + names[static_cast<int>(tp.type)]);
+                    current = tp.type;
+                    firstPath = false;
+                }
+                double speed = pp.printSpeed;
+                if (tp.type == PathType::OuterWall) speed = pp.outerWallSpeed;
+                if (i == 0) speed = pp.firstLayerSpeed;
+
+                g.travel(tp.points.front().x, tp.points.front().y);
+                for (size_t k = 1; k < tp.points.size(); ++k)
+                    g.extrudeTo(tp.points[k].x, tp.points[k].y, speed, L.height);
+                if (tp.closed)
+                    g.extrudeTo(tp.points.front().x, tp.points.front().y, speed, L.height);
+            }
+        }
+        g.endGcode();
+
+        res.filamentMm = g.filamentUsedMm();
+        res.estimatedSeconds = g.estimatedSeconds();
+        std::ostringstream header;
+        header << std::fixed << std::setprecision(0) << ";TIME:" << res.estimatedSeconds << '\n'
+               << std::setprecision(4) << ";Filament used: " << res.filamentMm / 1000.0 << "m\n";
+        res.gcode = header.str() + g.str();
+        res.ok = true;
+    } catch (const Standard_Failure& e) {
+        res.error = std::string("Geometriefehler: ") + (e.GetMessageString() ? e.GetMessageString() : "");
+    } catch (const std::exception& e) {
+        res.error = e.what();
+    }
+    return res;
+}
+
+} // namespace fw

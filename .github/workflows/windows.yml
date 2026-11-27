@@ -1,0 +1,53 @@
+name: Windows-Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 360
+    env:
+      VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}\\vcpkg-cache,readwrite"
+    steps:
+      - uses: actions/checkout@v4
+
+      # Qt und OpenCascade zu bauen dauert beim ersten Mal lange; danach kommen sie aus dem Cache.
+      - name: vcpkg-Cache laden
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: vcpkg-cache
+          key: vcpkg-${{ hashFiles('vcpkg.json') }}-v1
+          restore-keys: vcpkg-
+
+      - name: Konfigurieren
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake"
+
+      - name: vcpkg-Cache speichern
+        if: always() && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: vcpkg-cache
+          key: vcpkg-${{ hashFiles('vcpkg.json') }}-v1
+
+      - name: Bauen
+        run: cmake --build build --config Release --parallel
+
+      - name: Tests
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Paket schnueren
+        run: |
+          New-Item -ItemType Directory dist | Out-Null
+          Copy-Item build\Release\formwerk.exe dist\
+          Copy-Item build\Release\*.dll dist\
+          & build\vcpkg_installed\x64-windows\tools\Qt6\bin\windeployqt.exe --release --no-translations dist\formwerk.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FormWerk-Windows
+          path: dist
