@@ -377,8 +377,50 @@ void testCustomPlane()
     CHECK(std::abs(volume(copy.body()) - expected) < 1.0);
 }
 
+void testEndOfPart()
+{
+    fw::PartDocument doc;
+    auto sk = std::make_shared<fw::Sketch>("Skizze1", fw::SketchPlane::XY);
+    sk->addRectangle(0, 0, 10, 10);
+    doc.addFeature(sk);
+    auto e1 = std::make_shared<fw::ExtrudeFeature>("Extrusion1", sk, 10.0);
+    doc.addFeature(e1);
+    auto sk2 = std::make_shared<fw::Sketch>("Skizze2", fw::SketchPlane::XY, 10.0);
+    sk2->addRectangle(0, 0, 10, 10);
+    doc.addFeature(sk2);
+    doc.addFeature(std::make_shared<fw::ExtrudeFeature>("Extrusion2", sk2, 5.0));
+    CHECK(doc.recompute());
+    CHECK(std::abs(volume(doc.body()) - 1500.0) < 1.0);
+
+    // Bauteilende hinter Extrusion1: nur 1000 mm³
+    doc.setEndOfPart(2);
+    CHECK(doc.recompute());
+    CHECK(std::abs(volume(doc.body()) - 1000.0) < 1.0);
+    CHECK(doc.isAfterEndOfPart(doc.features()[3]));
+
+    // Neues Feature landet am Bauteilende, Bauteilende rutscht mit
+    auto sk3 = std::make_shared<fw::Sketch>("Skizze3", fw::SketchPlane::XY);
+    doc.addFeature(sk3);
+    CHECK(doc.features()[2] == sk3);
+    CHECK(doc.endOfPart() == 3);
+
+    // Speichern/Laden, Umbenennen, Sichtbarkeit
+    sk->setVisibility(fw::Sketch::Visibility::Shown);
+    CHECK(!doc.rename(e1, "Skizze2"));
+    CHECK(doc.rename(e1, "Grundplatte"));
+    fw::PartDocument copy;
+    CHECK(copy.fromText(doc.toText()));
+    CHECK(copy.endOfPart() == 3);
+    CHECK(copy.features()[1]->name() == "Grundplatte");
+    CHECK(std::dynamic_pointer_cast<fw::Sketch>(copy.features()[0])->visibility() == fw::Sketch::Visibility::Shown);
+    CHECK(copy.toText() == doc.toText());
+    doc.setEndOfPart(-1);
+    CHECK(doc.endOfPart() == 5);
+}
+
 int main()
 {
+    testEndOfPart();
     testCustomPlane();
     testModifiers();
     testSketchSolver();

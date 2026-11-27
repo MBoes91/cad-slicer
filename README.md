@@ -26,6 +26,7 @@ Technik: C++17, Qt 6 (Oberfläche), OpenCascade (CAD-Kernel), Clipper (2D-Polygo
   getriebene Bemaßungen bei Überbestimmung, Anzeige der offenen Freiheitsgrade („Vollständig bestimmt")
 - Extrusion (Verbinden, Differenz, Schnittmenge, symmetrisch), Drehung um eine Skizzenachse
 - Parametrische Neuberechnung: Maß ändern, Modell baut sich neu auf
+- Bauteilende im Browser ziehen oder per Rechtsklick verschieben, Skizzen ein-/ausblenden, Features umbenennen (langsamer Doppelklick oder F2 im Browser)
 - Markierungsmenü per Rechtsklick (im Modell und in der Skizze), auch als Geste: rechte Taste halten, in Richtung ziehen, loslassen
 - 2D-Skizze wie in Inventor: Ursprungsebene oder ebene Bauteilfläche im 3D-Fenster anklicken; Bauteilkanten erscheinen als Bezug in der Skizze; Rechtsklick auf eine Ursprungsebene im Browser → Neue Skizze
 - Eigenschaften-Palette für Extrusion und Drehung mit Live-Vorschau, Ziehpfeil für den Abstand, Enter = OK, Esc = Abbrechen

@@ -26,6 +26,15 @@ public:
     bool removeFeature(const FeaturePtr& f);
     bool isUsed(const SketchPtr& s) const;
 
+    // Bauteilende: Anzahl der wirksamen Features (alles danach wird nicht berechnet).
+    // Neue Features werden am Bauteilende eingefuegt.
+    int endOfPart() const;
+    void setEndOfPart(int count);
+    bool isAfterEndOfPart(const FeaturePtr& f) const;
+
+    // Umbenennen mit Pruefung auf eindeutige Namen
+    bool rename(const FeaturePtr& f, const std::string& name);
+
     // Berechnet den Koerper neu. Gibt false zurueck, wenn ein Feature
     // fehlschlaegt; errorFeature/errorMessage nennen dann die Ursache.
     bool recompute();
@@ -49,6 +58,7 @@ private:
     std::string m_name;
     std::vector<FeaturePtr> m_features;
     std::vector<PrintModifier> m_modifiers;
+    int m_endOfPart = -1; // -1: ganz am Ende
     TopoDS_Shape m_body;
     FeaturePtr m_errorFeature;
     std::string m_errorMessage;

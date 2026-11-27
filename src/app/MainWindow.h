@@ -119,6 +119,7 @@ private:
 
 protected:
     void closeEvent(QCloseEvent* e) override;
+    bool eventFilter(QObject* obj, QEvent* ev) override;
 
 private:
     void updatePreview();
@@ -165,6 +166,7 @@ private:
     bool m_arrowSymmetric = false;
     double m_dragStartValue = 0.0;
     bool m_pickingPlane = false;
+    bool m_draggingEnd = false;
     std::vector<Handle(AIS_Shape)> m_planeAis;
     bool m_inPrintEnv = false;
     int m_visualStyle = 1; // 0 schattiert, 1 mit Kanten, 2 Drahtkoerper

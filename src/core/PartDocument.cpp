@@ -16,7 +16,41 @@ namespace fw {
 
 PartDocument::PartDocument(std::string name) : m_name(std::move(name)) {}
 
-void PartDocument::addFeature(FeaturePtr f) { m_features.push_back(std::move(f)); }
+void PartDocument::addFeature(FeaturePtr f)
+{
+    if (m_endOfPart >= 0 && m_endOfPart < static_cast<int>(m_features.size())) {
+        m_features.insert(m_features.begin() + m_endOfPart, std::move(f));
+        ++m_endOfPart;
+    } else {
+        m_features.push_back(std::move(f));
+    }
+}
+
+int PartDocument::endOfPart() const
+{
+    const int n = static_cast<int>(m_features.size());
+    return m_endOfPart < 0 ? n : std::min(m_endOfPart, n);
+}
+
+void PartDocument::setEndOfPart(int count)
+{
+    m_endOfPart = (count < 0 || count >= static_cast<int>(m_features.size())) ? -1 : count;
+}
+
+bool PartDocument::isAfterEndOfPart(const FeaturePtr& f) const
+{
+    auto it = std::find(m_features.begin(), m_features.end(), f);
+    return it != m_features.end() && (it - m_features.begin()) >= endOfPart();
+}
+
+bool PartDocument::rename(const FeaturePtr& f, const std::string& name)
+{
+    if (name.empty() || name.find_first_of(";=\n\r") != std::string::npos) return false;
+    for (const auto& o : m_features)
+        if (o != f && o->name() == name) return false;
+    f->setName(name);
+    return true;
+}
 
 bool PartDocument::isUsed(const SketchPtr& s) const
 {
@@ -32,6 +66,7 @@ bool PartDocument::removeFeature(const FeaturePtr& f)
     if (auto s = std::dynamic_pointer_cast<Sketch>(f); s && isUsed(s)) return false;
     auto it = std::find(m_features.begin(), m_features.end(), f);
     if (it == m_features.end()) return false;
+    if (m_endOfPart >= 0 && (it - m_features.begin()) < m_endOfPart) --m_endOfPart;
     m_features.erase(it);
     return true;
 }
@@ -41,7 +76,9 @@ bool PartDocument::recompute()
     m_errorFeature.reset();
     m_errorMessage.clear();
     TopoDS_Shape body;
-    for (const auto& f : m_features) {
+    const int end = endOfPart();
+    for (int i = 0; i < end; ++i) {
+        const FeaturePtr& f = m_features[static_cast<size_t>(i)];
         if (f->isSuppressed()) continue;
         try {
             body = f->apply(body);
@@ -138,6 +175,7 @@ void PartDocument::clear(std::string name)
     m_name = std::move(name);
     m_features.clear();
     m_modifiers.clear();
+    m_endOfPart = -1;
     m_body.Nullify();
     m_errorFeature.reset();
     m_errorMessage.clear();
@@ -160,6 +198,7 @@ std::string PartDocument::toText() const
                   << f.Direction().X() << ',' << f.Direction().Y() << ',' << f.Direction().Z() << ','
                   << f.XDirection().X() << ',' << f.XDirection().Y() << ',' << f.XDirection().Z();
             }
+            if (s->visibility() != Sketch::Visibility::Auto) o << ";visible=" << static_cast<int>(s->visibility());
             o << ";suppressed=" << sup << '\n';
             const auto& g = s->geometry();
             for (size_t i = 1; i < g.points.size(); ++i)
@@ -184,6 +223,7 @@ std::string PartDocument::toText() const
         o << "modifier = " << safeName(m.name) << ";role=" << static_cast<int>(m.role) << ";shape=" << static_cast<int>(m.shape)
           << ";c=" << m.cx << ',' << m.cy << ',' << m.cz << ";s=" << m.sx << ',' << m.sy << ',' << m.sz
           << ";infill=" << m.infillDensity << ";pattern=" << m.infillPattern << '\n';
+    if (m_endOfPart >= 0 && m_endOfPart < static_cast<int>(m_features.size())) o << "endofpart = " << m_endOfPart << '\n';
     return o.str();
 }
 
@@ -194,6 +234,7 @@ bool PartDocument::fromText(const std::string& text, std::string* error)
     std::map<std::string, SketchPtr> sketchesByName;
     std::vector<PrintModifier> modifiers;
     SketchPtr current;
+    int endOfPart = -1;
 
     std::istringstream in(text);
     std::string line;
@@ -212,6 +253,8 @@ bool PartDocument::fromText(const std::string& text, std::string* error)
                 if (num(val) > 1) throw std::invalid_argument("Datei stammt aus einer neueren Version");
             } else if (key == "part") {
                 name = val;
+            } else if (key == "endofpart") {
+                endOfPart = static_cast<int>(num(val));
             } else if (key == "sketch") {
                 const auto a = attrs(parts);
                 const auto planeType = static_cast<SketchPlane>(static_cast<int>(num(need(a, "plane"))));
@@ -226,6 +269,7 @@ bool PartDocument::fromText(const std::string& text, std::string* error)
                     current = std::make_shared<Sketch>(parts.at(0), planeType, num(need(a, "offset")));
                 }
                 current->setSuppressed(a.count("suppressed") && a.at("suppressed") == "1");
+                if (a.count("visible")) current->setVisibility(static_cast<Sketch::Visibility>(static_cast<int>(num(a.at("visible")))));
                 sketchesByName[current->name()] = current;
                 features.push_back(current);
             } else if (key == "rect" || key == "circle" || key == "pt" || key == "ent" || key == "con") {
@@ -295,6 +339,7 @@ bool PartDocument::fromText(const std::string& text, std::string* error)
     clear(name);
     m_features = std::move(features);
     m_modifiers = std::move(modifiers);
+    setEndOfPart(endOfPart);
     return true;
 }
 

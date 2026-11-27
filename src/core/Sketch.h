@@ -40,6 +40,11 @@ public:
 
     bool isEmpty() const;
 
+    // Sichtbarkeit im 3D-Fenster: Auto = sichtbar, solange kein Feature sie verbraucht
+    enum class Visibility { Auto, Shown, Hidden };
+    Visibility visibility() const { return m_visibility; }
+    void setVisibility(Visibility v) { m_visibility = v; }
+
     // Geschlossene Profilflaechen (Konstruktionslinien zaehlen nicht).
     // Ineinanderliegende Konturen werden abwechselnd als Material und Loch gewertet.
     TopoDS_Shape profile() const;
@@ -51,6 +56,7 @@ private:
     SketchPlane m_planeType;
     double m_offset;
     gp_Ax3 m_frame; // nur fuer SketchPlane::Custom
+    Visibility m_visibility = Visibility::Auto;
     SketchGeometry m_geo;
 };
 

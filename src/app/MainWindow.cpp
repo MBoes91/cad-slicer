@@ -31,6 +31,8 @@
 #include <Prs3d_Drawer.hxx>
 
 #include <QApplication>
+#include <QMouseEvent>
+#include <QSignalBlocker>
 #include <QButtonGroup>
 #include <QAbstractButton>
 #include <QComboBox>
@@ -1006,17 +1008,58 @@ void MainWindow::buildBrowser()
             menu.exec(m_browser->viewport()->mapToGlobal(pos));
             return;
         }
+        if (item && item->data(0, Qt::UserRole + 3).toBool()) {
+            QMenu menu;
+            menu.addAction(makeIcon(Icon::EndOfPart), "Bauteilende ans Ende verschieben", this, [this] {
+                m_doc.setEndOfPart(-1);
+                rebuild();
+            })->setEnabled(m_doc.endOfPart() < static_cast<int>(m_doc.features().size()));
+            menu.exec(m_browser->viewport()->mapToGlobal(pos));
+            return;
+        }
         auto f = featureOf(item);
         if (!f) return;
         QMenu menu;
         menu.addAction(f->type() == fw::FeatureType::Sketch ? "Skizze bearbeiten" : "Feature bearbeiten",
                        this, [this, f] { cmdEditFeature(f); });
+        menu.addAction("Umbenennen", this, [this, item] { m_browser->editItem(item); });
+        if (auto sk = std::dynamic_pointer_cast<fw::Sketch>(f)) {
+            const bool shown = sk->visibility() == fw::Sketch::Visibility::Shown ||
+                               (sk->visibility() == fw::Sketch::Visibility::Auto && !m_doc.isUsed(sk));
+            QAction* vis = menu.addAction("Sichtbarkeit", this, [this, sk, shown] {
+                sk->setVisibility(shown ? fw::Sketch::Visibility::Hidden : fw::Sketch::Visibility::Shown);
+                rebuild();
+            });
+            vis->setCheckable(true);
+            vis->setChecked(shown);
+        }
+        menu.addAction(makeIcon(Icon::EndOfPart), "Bauteilende hierher verschieben", this, [this, f] {
+            const auto& fs = m_doc.features();
+            const int i = static_cast<int>(std::find(fs.begin(), fs.end(), f) - fs.begin());
+            m_doc.setEndOfPart(i + 1);
+            rebuild();
+        });
         menu.addAction(f->isSuppressed() ? QString::fromUtf8("Unterdrückung aufheben") : QString::fromUtf8("Unterdrücken"),
                        this, [this, f] { cmdToggleSuppress(f); });
         menu.addSeparator();
         menu.addAction(QString::fromUtf8("Löschen"), this, [this, f] { cmdDeleteFeature(f); });
         menu.exec(m_browser->viewport()->mapToGlobal(pos));
     });
+
+    m_browser->setEditTriggers(QAbstractItemView::SelectedClicked | QAbstractItemView::EditKeyPressed);
+    connect(m_browser, &QTreeWidget::itemChanged, this, [this](QTreeWidgetItem* item) {
+        auto f = featureOf(item);
+        if (!f) return;
+        const std::string name = item->text(0).trimmed().toStdString();
+        if (name == f->name()) return;
+        if (!m_doc.rename(f, name)) {
+            statusBar()->showMessage(QString::fromUtf8("Der Name ist ungültig oder schon vergeben."), 5000);
+            QTimer::singleShot(0, this, [this] { refreshBrowser(); });
+            return;
+        }
+        QTimer::singleShot(0, this, [this] { rebuild(); });
+    });
+    m_browser->viewport()->installEventFilter(this);
 
     auto* dock = m_browserDock = new QDockWidget("Modell", this);
     dock->setObjectName("Modellbrowser");
@@ -1153,7 +1196,9 @@ void MainWindow::displayModel()
 
     // Skizzen nur anzeigen, solange sie von keinem Feature verbraucht werden (wie in Inventor)
     for (const auto& s : sketches()) {
-        if (m_doc.isUsed(s) || s->isEmpty()) continue;
+        const bool shown = s->visibility() == fw::Sketch::Visibility::Shown ||
+                           (s->visibility() == fw::Sketch::Visibility::Auto && !m_doc.isUsed(s));
+        if (!shown || s->isEmpty() || m_doc.isAfterEndOfPart(s)) continue;
         Handle(AIS_Shape) a = new AIS_Shape(s->wireframe());
         a->SetColor(Quantity_NOC_ORANGE);
         a->SetWidth(2.0);
@@ -1164,8 +1209,47 @@ void MainWindow::displayModel()
     displayModifiers(gp_Vec());
 }
 
+bool MainWindow::eventFilter(QObject* obj, QEvent* ev)
+{
+    // Bauteilende im Browser mit der Maus verschieben
+    if (m_browser && obj == m_browser->viewport()) {
+        if (ev->type() == QEvent::MouseButtonPress) {
+            auto* me = static_cast<QMouseEvent*>(ev);
+            QTreeWidgetItem* it = m_browser->itemAt(me->position().toPoint());
+            if (me->button() == Qt::LeftButton && it && it->data(0, Qt::UserRole + 3).toBool() && m_browser->isEnabled()) {
+                m_draggingEnd = true;
+                m_browser->viewport()->setCursor(Qt::SplitVCursor);
+                return true;
+            }
+        } else if (ev->type() == QEvent::MouseMove && m_draggingEnd) {
+            return true;
+        } else if (ev->type() == QEvent::MouseButtonRelease && m_draggingEnd) {
+            m_draggingEnd = false;
+            m_browser->viewport()->unsetCursor();
+            auto* me = static_cast<QMouseEvent*>(ev);
+            QTreeWidgetItem* it = m_browser->itemAt(me->position().toPoint());
+            // Auf ein Feature (oder dessen Skizze) fallen lassen: Bauteilende danach
+            while (it && it->parent() && it->parent()->parent()) it = it->parent();
+            if (auto f = featureOf(it)) {
+                const auto& fs = m_doc.features();
+                int i = static_cast<int>(std::find(fs.begin(), fs.end(), f) - fs.begin());
+                const QRect r = m_browser->visualItemRect(it);
+                if (me->position().y() < r.center().y()) --i; // obere Haelfte: davor
+                m_doc.setEndOfPart(i + 1);
+                rebuild();
+            } else if (it && it->text(0) == "Ursprung") {
+                m_doc.setEndOfPart(0);
+                rebuild();
+            }
+            return true;
+        }
+    }
+    return QMainWindow::eventFilter(obj, ev);
+}
+
 void MainWindow::refreshBrowser()
 {
+    const QSignalBlocker block(m_browser);
     m_browser->clear();
     m_itemFeature.clear();
 
@@ -1185,12 +1269,29 @@ void MainWindow::refreshBrowser()
     auto sketchItem = [&](const fw::SketchPtr& s, QTreeWidgetItem* parent) {
         auto* it = new QTreeWidgetItem(parent, {QString::fromStdString(s->name())});
         it->setIcon(0, makeIcon(Icon::Sketch));
+        it->setFlags(it->flags() | Qt::ItemIsEditable);
+        if (s->visibility() == fw::Sketch::Visibility::Hidden ||
+            (s->visibility() == fw::Sketch::Visibility::Auto && m_doc.isUsed(s)))
+            it->setToolTip(0, "Ausgeblendet");
+        if (m_doc.isAfterEndOfPart(s)) it->setForeground(0, Qt::gray);
         m_itemFeature[it] = s;
         placed[s.get()] = it;
         return it;
     };
 
+    const int eop = m_doc.endOfPart();
+    QTreeWidgetItem* endItem = nullptr;
+    auto placeEnd = [&] {
+        endItem = new QTreeWidgetItem(root, {"Bauteilende"});
+        endItem->setIcon(0, makeIcon(Icon::EndOfPart));
+        endItem->setData(0, Qt::UserRole + 3, true);
+        endItem->setToolTip(0, QString::fromUtf8("Bauteilende: ziehen oder per Rechtsklick verschieben. "
+                                                 "Features darunter werden nicht berechnet."));
+    };
+    int index = -1;
     for (const auto& f : m_doc.features()) {
+        ++index;
+        if (!endItem && index >= eop) placeEnd();
         QString label = QString::fromStdString(f->name());
         Icon icon = Icon::Sketch;
         fw::SketchPtr used;
@@ -1203,8 +1304,10 @@ void MainWindow::refreshBrowser()
 
         auto* it = new QTreeWidgetItem(root, {label});
         it->setIcon(0, makeIcon(icon));
+        it->setFlags(it->flags() | Qt::ItemIsEditable);
         m_itemFeature[it] = f;
         if (used && !placed.count(used.get())) sketchItem(used, it);
+        if (index >= eop) it->setForeground(0, Qt::gray);
 
         if (f->isSuppressed()) {
             QFont font = it->font(0);
@@ -1217,8 +1320,7 @@ void MainWindow::refreshBrowser()
             it->setToolTip(0, QString::fromStdString(m_doc.errorMessage()));
         }
     }
-    auto* endItem = new QTreeWidgetItem(root, {"Bauteilende"});
-    endItem->setIcon(0, makeIcon(Icon::EndOfPart));
+    if (!endItem) placeEnd();
     if (!m_doc.modifiers().empty()) {
         auto* modRoot = new QTreeWidgetItem(root, {"Druck-Modifikatoren"});
         modRoot->setIcon(0, makeIcon(Icon::Slice));
