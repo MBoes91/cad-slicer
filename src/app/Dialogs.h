@@ -27,42 +27,6 @@ private:
     QDoubleSpinBox* m_offset;
 };
 
-// Extrusion anlegen/bearbeiten
-class ExtrudeDialog : public QDialog {
-    Q_OBJECT
-public:
-    ExtrudeDialog(const std::vector<fw::SketchPtr>& sketches, QWidget* parent = nullptr);
-    void setValues(const fw::ExtrudeFeature& f);
-    fw::SketchPtr sketch() const;
-    double distance() const;
-    fw::BooleanOp operation() const;
-    bool symmetric() const;
-private:
-    std::vector<fw::SketchPtr> m_sketches;
-    QComboBox* m_sketch;
-    QDoubleSpinBox* m_distance;
-    QComboBox* m_op;
-    QCheckBox* m_symmetric;
-};
-
-// Drehung anlegen/bearbeiten
-class RevolveDialog : public QDialog {
-    Q_OBJECT
-public:
-    RevolveDialog(const std::vector<fw::SketchPtr>& sketches, QWidget* parent = nullptr);
-    void setValues(const fw::RevolveFeature& f);
-    fw::SketchPtr sketch() const;
-    fw::RevolveAxis axis() const;
-    double angle() const;
-    fw::BooleanOp operation() const;
-private:
-    std::vector<fw::SketchPtr> m_sketches;
-    QComboBox* m_sketch;
-    QComboBox* m_axis;
-    QDoubleSpinBox* m_angle;
-    QComboBox* m_op;
-};
-
 // Druckeinstellungen: alle Einstellungen nach Gruppen, Profile verwalten,
 // Hoehen-Ereignisse bearbeiten.
 class PrintSettingsDialog : public QDialog {

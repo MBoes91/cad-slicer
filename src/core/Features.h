@@ -17,6 +17,7 @@ public:
     TopoDS_Shape apply(const TopoDS_Shape& body) const override;
 
     SketchPtr sketch() const { return m_sketch; }
+    void setSketch(SketchPtr s) { m_sketch = std::move(s); }
     double distance() const { return m_distance; }
     void setDistance(double d) { m_distance = d; }
     BooleanOp operation() const { return m_op; }
@@ -43,6 +44,7 @@ public:
     TopoDS_Shape apply(const TopoDS_Shape& body) const override;
 
     SketchPtr sketch() const { return m_sketch; }
+    void setSketch(SketchPtr s) { m_sketch = std::move(s); }
     RevolveAxis axis() const { return m_axis; }
     void setAxis(RevolveAxis a) { m_axis = a; }
     double angle() const { return m_angle; }

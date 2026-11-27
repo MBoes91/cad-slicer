@@ -2,6 +2,7 @@
 
 #include "app/Dialogs.h"
 #include "app/OcctView.h"
+#include "app/PropertyPanel.h"
 #include "app/SketchCanvas.h"
 #include "app/ToolpathPreview.h"
 #include "slicer/Settings.h"
@@ -9,6 +10,9 @@
 #include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
+#include <BRepPrimAPI_MakeCone.hxx>
+#include <BRep_Builder.hxx>
+#include <TopoDS_Compound.hxx>
 #include <BRepBndLib.hxx>
 #include <Bnd_Box.hxx>
 #include <BRepGProp.hxx>
@@ -17,6 +21,11 @@
 #include <Prs3d_Drawer.hxx>
 
 #include <QApplication>
+#include <QButtonGroup>
+#include <QAbstractButton>
+#include <QComboBox>
+#include <QFormLayout>
+#include <QDoubleSpinBox>
 #include <QDockWidget>
 #include <QFile>
 #include <QFileDialog>
@@ -519,6 +528,7 @@ void MainWindow::syncDocTabs(bool home)
 
 void MainWindow::showHome()
 {
+    endFeatureEdit(false);
     if (m_editSketch) finishSketch(true);
     refreshHomePage();
     m_stack->setCurrentWidget(m_homePage);
@@ -945,11 +955,46 @@ void MainWindow::buildBrowser()
     dock->setWidget(m_browser);
     dock->setFeatures(QDockWidget::DockWidgetMovable);
     addDockWidget(Qt::LeftDockWidgetArea, dock);
+
+    // Eigenschaften-Palette (oberhalb des Browsers, nur waehrend eines Befehls)
+    m_panel = new PropertyPanel;
+    connect(m_panel, &PropertyPanel::accepted, this, [this] { endFeatureEdit(true); });
+    connect(m_panel, &PropertyPanel::rejected, this, [this] { endFeatureEdit(false); });
+    m_panelDock = new QDockWidget("Eigenschaften", this);
+    m_panelDock->setObjectName("Eigenschaften");
+    m_panelDock->setWidget(m_panel);
+    m_panelDock->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable);
+    addDockWidget(Qt::LeftDockWidgetArea, m_panelDock);
+    splitDockWidget(m_panelDock, dock, Qt::Vertical);
+    m_panelDock->hide();
+
+    // Esc / Enter beenden den Befehl auch, wenn der Fokus im Grafikfenster liegt
+    m_panelCancel = new QAction(this);
+    m_panelCancel->setShortcut(Qt::Key_Escape);
+    m_panelCancel->setEnabled(false);
+    connect(m_panelCancel, &QAction::triggered, this, [this] {
+        if (m_view->navMode() != OcctView::NavMode::None) m_view->setNavMode(OcctView::NavMode::None, false);
+        else endFeatureEdit(false);
+    });
+    addAction(m_panelCancel);
+    m_panelOk = new QAction(this);
+    m_panelOk->setShortcuts({QKeySequence(Qt::Key_Return), QKeySequence(Qt::Key_Enter)});
+    m_panelOk->setEnabled(false);
+    connect(m_panelOk, &QAction::triggered, this, [this] { endFeatureEdit(true); });
+    addAction(m_panelOk);
+
+    m_previewTimer = new QTimer(this);
+    m_previewTimer->setSingleShot(true);
+    m_previewTimer->setInterval(30);
+    connect(m_previewTimer, &QTimer::timeout, this, [this] { previewFeature(); });
 }
 
 void MainWindow::loadDemoPart()
 {
     // Beispielteil: Platte mit Bohrung und aufgesetztem Zapfen
+    endFeatureEdit(false);
+    if (m_editSketch) finishSketch(false);
+    exitPrintEnvironment();
     m_doc.clear("Beispiel");
     m_filePath.clear();
     m_slice = fw::SliceResult{};
@@ -1005,6 +1050,20 @@ void MainWindow::rebuild(bool fit)
     m_slice = fw::SliceResult{}; // Slicing ist nach Modellaenderung veraltet
     if (m_printPreview) setPrintPreview(false);
 
+    refreshBrowser();
+    if (m_view->context().IsNull()) return;
+    displayModel();
+    if (fit) m_view->fitAll();
+    else m_view->redraw();
+
+    if (!ok) {
+        statusBar()->showMessage(QString::fromUtf8("Fehler in %1: %2")
+            .arg(QString::fromStdString(m_doc.errorFeature()->name()), QString::fromStdString(m_doc.errorMessage())), 8000);
+    }
+}
+
+void MainWindow::displayModel()
+{
     const auto& ctx = m_view->context();
     if (ctx.IsNull()) return;
 
@@ -1034,15 +1093,6 @@ void MainWindow::rebuild(bool fit)
     }
 
     displayModifiers(gp_Vec());
-
-    refreshBrowser();
-    if (fit) m_view->fitAll();
-    else m_view->redraw();
-
-    if (!ok) {
-        statusBar()->showMessage(QString::fromUtf8("Fehler in %1: %2")
-            .arg(QString::fromStdString(m_doc.errorFeature()->name()), QString::fromStdString(m_doc.errorMessage())), 8000);
-    }
 }
 
 void MainWindow::refreshBrowser()
@@ -1160,57 +1210,330 @@ void MainWindow::finishSketch(bool accept)
     rebuild();
 }
 
+fw::SketchPtr MainWindow::defaultProfileSketch() const
+{
+    // Wie Inventor: die zuletzt erstellte, noch nicht verbrauchte Skizze vorschlagen
+    auto sk = sketches();
+    for (auto it = sk.rbegin(); it != sk.rend(); ++it)
+        if (!m_doc.isUsed(*it) && !(*it)->isEmpty()) return *it;
+    return sk.empty() ? nullptr : sk.back();
+}
+
 void MainWindow::cmdExtrude()
 {
-    auto sk = sketches();
-    if (sk.empty()) {
+    if (m_editFeature) return;
+    auto sk = defaultProfileSketch();
+    if (!sk) {
         QMessageBox::information(this, "Extrusion", "Bitte zuerst eine 2D-Skizze erstellen.");
         return;
     }
-    ExtrudeDialog dlg(sk, this);
-    if (dlg.exec() != QDialog::Accepted || !dlg.sketch()) return;
-    m_doc.addFeature(std::make_shared<fw::ExtrudeFeature>(m_doc.nextName("Extrusion"), dlg.sketch(),
-                                                          dlg.distance(), dlg.operation(), dlg.symmetric()));
-    rebuild();
+    const std::string backup = m_doc.toText();
+    auto f = std::make_shared<fw::ExtrudeFeature>(m_doc.nextName("Extrusion"), sk, 10.0,
+                                                  m_doc.body().IsNull() ? fw::BooleanOp::Join : fw::BooleanOp::Join);
+    m_doc.addFeature(f);
+    beginFeatureEdit(f, true, backup);
 }
 
 void MainWindow::cmdRevolve()
 {
-    auto sk = sketches();
-    if (sk.empty()) {
+    if (m_editFeature) return;
+    auto sk = defaultProfileSketch();
+    if (!sk) {
         QMessageBox::information(this, "Drehung", "Bitte zuerst eine 2D-Skizze erstellen.");
         return;
     }
-    RevolveDialog dlg(sk, this);
-    if (dlg.exec() != QDialog::Accepted || !dlg.sketch()) return;
-    m_doc.addFeature(std::make_shared<fw::RevolveFeature>(m_doc.nextName("Drehung"), dlg.sketch(),
-                                                          dlg.axis(), dlg.angle(), dlg.operation()));
-    rebuild();
+    const std::string backup = m_doc.toText();
+    auto f = std::make_shared<fw::RevolveFeature>(m_doc.nextName("Drehung"), sk, fw::RevolveAxis::SketchY, 360.0);
+    m_doc.addFeature(f);
+    beginFeatureEdit(f, true, backup);
 }
 
 void MainWindow::cmdEditFeature(const fw::FeaturePtr& f)
 {
+    if (m_editFeature) return;
     if (auto s = std::dynamic_pointer_cast<fw::Sketch>(f)) {
         enterSketch(s, false);
-    } else if (auto e = std::dynamic_pointer_cast<fw::ExtrudeFeature>(f)) {
-        ExtrudeDialog dlg({e->sketch()}, this);
-        dlg.setValues(*e);
-        if (dlg.exec() == QDialog::Accepted) {
-            e->setDistance(dlg.distance());
-            e->setOperation(dlg.operation());
-            e->setSymmetric(dlg.symmetric());
-            rebuild();
-        }
+    } else if (f->type() == fw::FeatureType::Extrude || f->type() == fw::FeatureType::Revolve) {
+        beginFeatureEdit(f, false, m_doc.toText());
+    }
+}
+
+namespace {
+QIcon opIcon(fw::BooleanOp op)
+{
+    QPixmap pm(48, 48);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    const QColor a(120, 160, 215), dark(50, 60, 75);
+    p.setPen(QPen(dark, 2));
+    QPainterPath r1, r2;
+    r1.addEllipse(QRectF(6, 10, 24, 24));
+    r2.addEllipse(QRectF(18, 14, 24, 24));
+    switch (op) {
+    case fw::BooleanOp::Join: p.fillPath(r1.united(r2), a); p.drawPath(r1.united(r2)); break;
+    case fw::BooleanOp::Cut: p.fillPath(r1.subtracted(r2), a); p.drawPath(r1); p.setPen(QPen(dark, 1, Qt::DashLine)); p.drawPath(r2); break;
+    case fw::BooleanOp::Intersect: p.fillPath(r1.intersected(r2), a); p.setPen(QPen(dark, 1, Qt::DashLine)); p.drawPath(r1); p.drawPath(r2); break;
+    }
+    return QIcon(pm);
+}
+
+QIcon directionIcon(int kind) // 0 Standard, 1 umgekehrt, 2 symmetrisch
+{
+    QPixmap pm(48, 48);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    const QColor dark(50, 60, 75), orange(235, 140, 30);
+    p.setPen(QPen(dark, 2));
+    p.setBrush(QColor(150, 185, 230));
+    const int top = kind == 0 ? 8 : kind == 1 ? 24 : 14;
+    p.drawRect(12, top, 24, 18);
+    p.setPen(QPen(orange, 3));
+    p.drawLine(6, 24, 42, 24);
+    return QIcon(pm);
+}
+} // namespace
+
+void MainWindow::beginFeatureEdit(const fw::FeaturePtr& f, bool isNew, const std::string& backup)
+{
+    if (m_printPreview) setPrintPreview(false);
+    m_editFeature = f;
+    m_editIsNew = isNew;
+    m_editBackup = backup;
+    m_editDistance = nullptr;
+    for (QAction* a : m_modelActions) a->setEnabled(false);
+    m_undoAction->setEnabled(false);
+    m_redoAction->setEnabled(false);
+    m_browser->setEnabled(false);
+
+    auto sk = sketches();
+    auto profileCombo = [&](const fw::SketchPtr& current) {
+        auto* c = new QComboBox;
+        for (const auto& s : sk) c->addItem(makeIcon(Icon::Sketch), QString::fromStdString(s->name()));
+        for (size_t i = 0; i < sk.size(); ++i)
+            if (sk[i] == current) c->setCurrentIndex(static_cast<int>(i));
+        return c;
+    };
+    auto sketchAt = [this](int i) { auto s = sketches(); return i >= 0 && i < static_cast<int>(s.size()) ? s[static_cast<size_t>(i)] : nullptr; };
+
+    if (auto e = std::dynamic_pointer_cast<fw::ExtrudeFeature>(f)) {
+        m_panel->begin(makeIcon(Icon::Extrude), QString::fromUtf8("Extrusion  ›  %1").arg(QString::fromStdString(e->name())));
+        auto* in = m_panel->addSection("Eingabegeometrie");
+        auto* profile = profileCombo(e->sketch());
+        in->addRow("Profil", profile);
+
+        auto* beh = m_panel->addSection("Verhalten");
+        auto* dirGroup = new QButtonGroup(m_panel);
+        const int dir = e->symmetric() ? 2 : (e->distance() < 0 ? 1 : 0);
+        beh->addRow("Richtung", PropertyPanel::choiceRow(dirGroup,
+            {{directionIcon(0), "Standard"}, {directionIcon(1), "Umgekehrt"}, {directionIcon(2), "Symmetrisch"}}, dir));
+        auto* dist = new QDoubleSpinBox;
+        dist->setRange(0.01, 10000);
+        dist->setDecimals(2);
+        dist->setSuffix(" mm");
+        dist->setValue(std::abs(e->distance()));
+        dist->setKeyboardTracking(false);
+        beh->addRow("Abstand A", dist);
+        m_editDistance = dist;
+        m_editDirGroup = dirGroup;
+
+        auto* out = m_panel->addSection("Ausgabe");
+        auto* opGroup = new QButtonGroup(m_panel);
+        out->addRow("Boolesch", PropertyPanel::choiceRow(opGroup,
+            {{opIcon(fw::BooleanOp::Join), "Verbinden"}, {opIcon(fw::BooleanOp::Cut), "Differenz"},
+             {opIcon(fw::BooleanOp::Intersect), "Schnittmenge"}}, static_cast<int>(e->operation())));
+
+        auto apply = [this, e, profile, dirGroup, dist, opGroup, sketchAt] {
+            if (auto s = sketchAt(profile->currentIndex())) e->setSketch(s);
+            const int d = dirGroup->checkedId();
+            e->setDistance(d == 1 ? -dist->value() : dist->value());
+            e->setSymmetric(d == 2);
+            e->setOperation(static_cast<fw::BooleanOp>(opGroup->checkedId()));
+            schedulePreview();
+        };
+        connect(profile, &QComboBox::currentIndexChanged, m_panel, apply);
+        connect(dirGroup, &QButtonGroup::idClicked, m_panel, apply);
+        connect(dist, &QDoubleSpinBox::valueChanged, m_panel, apply);
+        connect(opGroup, &QButtonGroup::idClicked, m_panel, apply);
+        m_panel->setMessage(QString::fromUtf8("Tipp: Pfeil im Grafikfenster ziehen, um den Abstand zu ändern."), false);
     } else if (auto r = std::dynamic_pointer_cast<fw::RevolveFeature>(f)) {
-        RevolveDialog dlg({r->sketch()}, this);
-        dlg.setValues(*r);
-        if (dlg.exec() == QDialog::Accepted) {
-            r->setAxis(dlg.axis());
-            r->setAngle(dlg.angle());
-            r->setOperation(dlg.operation());
-            rebuild();
+        m_panel->begin(makeIcon(Icon::Revolve), QString::fromUtf8("Drehung  ›  %1").arg(QString::fromStdString(r->name())));
+        auto* in = m_panel->addSection("Eingabegeometrie");
+        auto* profile = profileCombo(r->sketch());
+        in->addRow("Profil", profile);
+        auto* axis = new QComboBox;
+        axis->addItems({"X-Achse der Skizze", "Y-Achse der Skizze"});
+        axis->setCurrentIndex(r->axis() == fw::RevolveAxis::SketchX ? 0 : 1);
+        in->addRow("Achse", axis);
+
+        auto* beh = m_panel->addSection("Verhalten");
+        auto* extentGroup = new QButtonGroup(m_panel);
+        const bool full = r->angle() >= 359.999;
+        beh->addRow(QString::fromUtf8("Ausdehnung"), PropertyPanel::choiceRow(extentGroup,
+            {{textIcon("360"), "Voll"}, {textIcon(QString::fromUtf8("∠")), "Winkel"}}, full ? 0 : 1));
+        auto* angle = new QDoubleSpinBox;
+        angle->setRange(0.1, 360);
+        angle->setSuffix(QString::fromUtf8(" °"));
+        angle->setValue(full ? 180.0 : r->angle());
+        angle->setEnabled(!full);
+        angle->setKeyboardTracking(false);
+        beh->addRow("Winkel A", angle);
+
+        auto* out = m_panel->addSection("Ausgabe");
+        auto* opGroup = new QButtonGroup(m_panel);
+        out->addRow("Boolesch", PropertyPanel::choiceRow(opGroup,
+            {{opIcon(fw::BooleanOp::Join), "Verbinden"}, {opIcon(fw::BooleanOp::Cut), "Differenz"},
+             {opIcon(fw::BooleanOp::Intersect), "Schnittmenge"}}, static_cast<int>(r->operation())));
+
+        auto apply = [this, r, profile, axis, extentGroup, angle, opGroup, sketchAt] {
+            if (auto s = sketchAt(profile->currentIndex())) r->setSketch(s);
+            r->setAxis(axis->currentIndex() == 0 ? fw::RevolveAxis::SketchX : fw::RevolveAxis::SketchY);
+            const bool full = extentGroup->checkedId() == 0;
+            angle->setEnabled(!full);
+            r->setAngle(full ? 360.0 : angle->value());
+            r->setOperation(static_cast<fw::BooleanOp>(opGroup->checkedId()));
+            schedulePreview();
+        };
+        connect(profile, &QComboBox::currentIndexChanged, m_panel, apply);
+        connect(axis, &QComboBox::currentIndexChanged, m_panel, apply);
+        connect(extentGroup, &QButtonGroup::idClicked, m_panel, apply);
+        connect(angle, &QDoubleSpinBox::valueChanged, m_panel, apply);
+        connect(opGroup, &QButtonGroup::idClicked, m_panel, apply);
+    }
+    m_panel->finish();
+    m_panelDock->show();
+    m_panelDock->raise();
+    m_panelCancel->setEnabled(true);
+    m_panelOk->setEnabled(true);
+    if (m_editDistance) {
+        m_editDistance->setFocus();
+        m_editDistance->selectAll();
+    }
+
+    // Ziehpfeil fuer den Extrusionsabstand
+    m_view->setDragHandler({
+        [this](const Handle(AIS_InteractiveObject)& o) {
+            if (m_arrowAis.IsNull() || o != m_arrowAis || !m_editDistance) return false;
+            auto e = std::dynamic_pointer_cast<fw::ExtrudeFeature>(m_editFeature);
+            m_dragStartValue = e ? e->distance() : 0.0;
+            return true;
+        },
+        [this](const QPointF& start, const QPointF& now) { dragArrow(start, now); },
+        [this] { previewFeature(); },
+    });
+    previewFeature();
+}
+
+void MainWindow::schedulePreview()
+{
+    m_previewTimer->start();
+}
+
+void MainWindow::previewFeature()
+{
+    if (!m_editFeature) return;
+    const bool ok = m_doc.recompute();
+    if (!m_view->context().IsNull()) displayModel();
+    if (!ok) {
+        m_panel->setMessage(QString::fromUtf8("Fehler: %1").arg(QString::fromStdString(m_doc.errorMessage())), true);
+    } else if (m_editDistance) {
+        m_panel->setMessage(QString::fromUtf8("Tipp: Pfeil im Grafikfenster ziehen, um den Abstand zu ändern."), false);
+    } else {
+        m_panel->setMessage({}, false);
+    }
+    updateArrow();
+    m_view->redraw();
+}
+
+void MainWindow::updateArrow()
+{
+    const auto& ctx = m_view->context();
+    if (ctx.IsNull()) return;
+    if (!m_arrowAis.IsNull()) ctx->Remove(m_arrowAis, false);
+    m_arrowAis.Nullify();
+    auto e = std::dynamic_pointer_cast<fw::ExtrudeFeature>(m_editFeature);
+    if (!e || !e->sketch()) return;
+
+    TopoDS_Shape profile;
+    try { profile = e->sketch()->profile(); } catch (...) { return; }
+    if (profile.IsNull()) return;
+    GProp_GProps props;
+    BRepGProp::SurfaceProperties(profile, props);
+    m_arrowDir = e->sketch()->plane().Direction();
+    const double d = e->symmetric() ? e->distance() / 2.0 : e->distance();
+    m_arrowBase = props.CentreOfMass();
+    m_arrowSymmetric = e->symmetric();
+
+    Bnd_Box box;
+    BRepBndLib::Add(m_doc.body().IsNull() ? profile : m_doc.body(), box);
+    const double diag = box.IsVoid() ? 50.0 : std::sqrt(box.SquareExtent());
+    const double len = std::max(6.0, diag * 0.12), rad = len * 0.05;
+    const gp_Dir out = d < 0 ? m_arrowDir.Reversed() : m_arrowDir;
+    const gp_Pnt tip = m_arrowBase.Translated(gp_Vec(m_arrowDir) * d);
+    TopoDS_Shape shaft = BRepPrimAPI_MakeCylinder(gp_Ax2(tip, out), rad, len * 0.7).Shape();
+    TopoDS_Shape head = BRepPrimAPI_MakeCone(gp_Ax2(tip.Translated(gp_Vec(out) * (len * 0.7)), out), rad * 3, 0, len * 0.3).Shape();
+    TopoDS_Compound c;
+    BRep_Builder bb;
+    bb.MakeCompound(c);
+    bb.Add(c, shaft);
+    bb.Add(c, head);
+    m_arrowAis = new AIS_Shape(c);
+    m_arrowAis->SetColor(Quantity_Color(0.95, 0.55, 0.10, Quantity_TOC_sRGB));
+    m_arrowAis->SetZLayer(Graphic3d_ZLayerId_Topmost);
+    ctx->Display(m_arrowAis, AIS_Shaded, 0, false);
+}
+
+void MainWindow::dragArrow(const QPointF& start, const QPointF& now)
+{
+    auto e = std::dynamic_pointer_cast<fw::ExtrudeFeature>(m_editFeature);
+    if (!e || !m_editDistance) return;
+    // Bildschirmrichtung der Extrusionsnormalen: Pixel pro Millimeter
+    const QPointF p0 = m_view->project(m_arrowBase);
+    const QPointF p1 = m_view->project(m_arrowBase.Translated(gp_Vec(m_arrowDir)));
+    const QPointF s = p1 - p0;
+    const double len2 = s.x() * s.x() + s.y() * s.y();
+    if (len2 < 1e-9) return;
+    const QPointF delta = now - start;
+    double mm = (delta.x() * s.x() + delta.y() * s.y()) / len2;
+    if (m_arrowSymmetric) mm *= 2.0;
+    double value = m_dragStartValue + mm;
+    value = std::round(value * 2.0) / 2.0; // auf 0,5 mm rasten
+    if (std::abs(value) < 0.5) value = m_dragStartValue < 0 ? -0.5 : 0.5;
+    // Richtung umschalten, wenn der Pfeil durch die Skizzenebene gezogen wird
+    if (!m_arrowSymmetric && m_editDirGroup) {
+        const int want = value < 0 ? 1 : 0;
+        if (m_editDirGroup->checkedId() != want) m_editDirGroup->button(want)->setChecked(true);
+    }
+    m_editDistance->setValue(std::abs(value)); // loest apply + Vorschau aus
+}
+
+void MainWindow::endFeatureEdit(bool accept)
+{
+    if (!m_editFeature) return;
+    m_previewTimer->stop();
+    if (accept) {
+        // Erst Vorschau aktualisieren, dann pruefen
+        const bool ok = m_doc.recompute();
+        if (!ok && m_doc.errorFeature() == m_editFeature) {
+            m_panel->setMessage(QString::fromUtf8("Fehler: %1").arg(QString::fromStdString(m_doc.errorMessage())), true);
+            return;
         }
     }
+    m_view->clearDragHandler();
+    if (!m_arrowAis.IsNull() && !m_view->context().IsNull()) m_view->context()->Remove(m_arrowAis, false);
+    m_arrowAis.Nullify();
+    m_editFeature.reset();
+    m_editDistance = nullptr;
+    m_editDirGroup = nullptr;
+    m_panelDock->hide();
+    m_panelCancel->setEnabled(false);
+    m_panelOk->setEnabled(false);
+    for (QAction* a : m_modelActions) a->setEnabled(true);
+    m_browser->setEnabled(true);
+    if (!accept) m_doc.fromText(m_editBackup);
+    m_editBackup.clear();
+    rebuild();
 }
 
 void MainWindow::cmdDeleteFeature(const fw::FeaturePtr& f)
@@ -1482,6 +1805,9 @@ bool MainWindow::maybeSave()
 void MainWindow::cmdNew()
 {
     if (!maybeSave()) return;
+    endFeatureEdit(false);
+    if (m_editSketch) finishSketch(false);
+    exitPrintEnvironment();
     m_doc.clear("Bauteil1");
     m_filePath.clear();
     m_slice = fw::SliceResult{};
@@ -1527,6 +1853,7 @@ bool MainWindow::openFile(const QString& path)
             QString::fromUtf8("Die Datei konnte nicht gelesen werden.\n%1").arg(QString::fromStdString(err)));
         return false;
     }
+    endFeatureEdit(false);
     if (m_editSketch) finishSketch(false);
     exitPrintEnvironment();
     m_doc.fromText(tmp.toText());

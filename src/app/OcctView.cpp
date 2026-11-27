@@ -303,9 +303,27 @@ Aspect_VKeyFlags OcctView::mapFlags(Qt::MouseButtons b, Qt::KeyboardModifiers mo
     return toVKeyFlags(mod);
 }
 
+QPointF OcctView::project(const gp_Pnt& p) const
+{
+    if (m_view.IsNull()) return {};
+    const gp_Pnt ndc = m_view->Camera()->Project(p);
+    Standard_Integer w = 0, h = 0;
+    m_view->Window()->Size(w, h);
+    return QPointF((ndc.X() + 1.0) * 0.5 * w, (1.0 - ndc.Y()) * 0.5 * h);
+}
+
 void OcctView::mousePressEvent(QMouseEvent* e)
 {
     if (m_view.IsNull()) return;
+    if (e->button() == Qt::LeftButton && m_navMode == NavMode::None && m_drag.begin) {
+        const Graphic3d_Vec2i p = posOf(e->position(), devicePixelRatioF());
+        m_ctx->MoveTo(p.x(), p.y(), m_view, false);
+        if (m_ctx->HasDetected() && m_drag.begin(m_ctx->DetectedInteractive())) {
+            m_dragActive = true;
+            m_dragStart = QPointF(p.x(), p.y());
+            return;
+        }
+    }
     if (m_lastButtons == Qt::NoButton) m_pressCamera = snapshot();
     m_lastButtons = e->buttons();
     if (e->button() == Qt::RightButton) {
@@ -322,6 +340,12 @@ void OcctView::mousePressEvent(QMouseEvent* e)
 void OcctView::mouseReleaseEvent(QMouseEvent* e)
 {
     if (m_view.IsNull()) return;
+    if (m_dragActive) {
+        m_dragActive = false;
+        if (m_drag.end) m_drag.end();
+        update();
+        return;
+    }
     m_lastButtons = e->buttons();
     if (m_navMode == NavMode::Pan && e->button() == Qt::LeftButton) setCursor(Qt::OpenHandCursor);
     if (UpdateMouseButtons(posOf(e->position(), devicePixelRatioF()), mapButtons(e->buttons()),
@@ -340,6 +364,12 @@ void OcctView::mouseReleaseEvent(QMouseEvent* e)
 void OcctView::mouseMoveEvent(QMouseEvent* e)
 {
     if (m_view.IsNull()) return;
+    if (m_dragActive) {
+        const Graphic3d_Vec2i p = posOf(e->position(), devicePixelRatioF());
+        if (m_drag.move) m_drag.move(m_dragStart, QPointF(p.x(), p.y()));
+        update();
+        return;
+    }
     if (UpdateMousePosition(posOf(e->position(), devicePixelRatioF()), mapButtons(e->buttons()),
                             mapFlags(e->buttons(), e->modifiers()), false))
         update();

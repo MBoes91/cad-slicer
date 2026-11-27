@@ -33,6 +33,9 @@ class QTabBar;
 class QToolBar;
 class QListWidget;
 class QDockWidget;
+class PropertyPanel;
+class QDoubleSpinBox;
+class QButtonGroup;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -58,6 +61,14 @@ private:
     void showViewContextMenu(const QPoint& globalPos);
     void cmdMeasure();
     void cmdCloseDoc();
+    void displayModel();
+    fw::SketchPtr defaultProfileSketch() const;
+    void beginFeatureEdit(const fw::FeaturePtr& f, bool isNew, const std::string& backup);
+    void endFeatureEdit(bool accept);
+    void schedulePreview();
+    void previewFeature();
+    void updateArrow();
+    void dragArrow(const QPointF& start, const QPointF& now);
 
     // Modell
     void rebuild(bool fit = false);
@@ -132,6 +143,23 @@ private:
     QWidget* m_modelTabPage = nullptr;
     QLabel* m_titleLabel = nullptr;
     bool m_docOpen = false;
+
+    // Feature-Bearbeitung in der Eigenschaften-Palette
+    PropertyPanel* m_panel = nullptr;
+    QDockWidget* m_panelDock = nullptr;
+    QTimer* m_previewTimer = nullptr;
+    QAction* m_panelCancel = nullptr;
+    QAction* m_panelOk = nullptr;
+    fw::FeaturePtr m_editFeature;
+    bool m_editIsNew = false;
+    std::string m_editBackup;
+    QDoubleSpinBox* m_editDistance = nullptr;
+    QButtonGroup* m_editDirGroup = nullptr;
+    Handle(AIS_Shape) m_arrowAis;
+    gp_Pnt m_arrowBase;
+    gp_Dir m_arrowDir;
+    bool m_arrowSymmetric = false;
+    double m_dragStartValue = 0.0;
     bool m_inPrintEnv = false;
     int m_visualStyle = 1; // 0 schattiert, 1 mit Kanten, 2 Drahtkoerper
     QAction* m_styleShaded = nullptr;

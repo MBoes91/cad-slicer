@@ -9,7 +9,10 @@
 #include <QElapsedTimer>
 #include <QWidget>
 
+#include <functional>
 #include <vector>
+
+#include <gp_Pnt.hxx>
 
 // 3D-Ansicht auf Basis von OpenCascade in einem nativen Qt-Fenster.
 // Maussteuerung wie in Inventor:
@@ -41,6 +44,18 @@ public:
     void previousView();
     bool hasPreviousView() const;
     void setPerspective(bool on);
+
+    // Ziehgriffe (z. B. Pfeil der Extrusion): begin entscheidet, ob das gepickte
+    // Objekt ein Griff ist; move bekommt Start- und aktuelle Position in Pixeln.
+    struct DragHandler {
+        std::function<bool(const Handle(AIS_InteractiveObject)&)> begin;
+        std::function<void(const QPointF& start, const QPointF& now)> move;
+        std::function<void()> end;
+    };
+    void setDragHandler(DragHandler h) { m_drag = std::move(h); m_dragActive = false; }
+    void clearDragHandler() { m_drag = {}; m_dragActive = false; }
+    // 3D-Punkt -> Fensterpixel (gleiches System wie DragHandler)
+    QPointF project(const gp_Pnt& p) const;
 
 signals:
     void hint(const QString& text);
@@ -86,4 +101,7 @@ private:
     Handle(Graphic3d_Camera) m_pressCamera;
     std::vector<Handle(Graphic3d_Camera)> m_history;
     QElapsedTimer m_wheelTimer;
+    DragHandler m_drag;
+    bool m_dragActive = false;
+    QPointF m_dragStart;
 };
