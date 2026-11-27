@@ -33,12 +33,18 @@ const char* planeName(SketchPlane p)
     case SketchPlane::XY: return "XY-Ebene";
     case SketchPlane::XZ: return "XZ-Ebene";
     case SketchPlane::YZ: return "YZ-Ebene";
+    case SketchPlane::Custom: return "Fläche";
     }
     return "?";
 }
 
 Sketch::Sketch(std::string name, SketchPlane plane, double offset)
     : Feature(std::move(name)), m_planeType(plane), m_offset(offset)
+{
+}
+
+Sketch::Sketch(std::string name, const gp_Ax3& frame)
+    : Feature(std::move(name)), m_planeType(SketchPlane::Custom), m_offset(0.0), m_frame(frame)
 {
 }
 
@@ -52,6 +58,11 @@ gp_Ax3 Sketch::plane() const
         return gp_Ax3(gp_Pnt(0, m_offset, 0), -gp::DY(), gp::DX());
     case SketchPlane::YZ:
         return gp_Ax3(gp_Pnt(m_offset, 0, 0), gp::DX(), gp::DY());
+    case SketchPlane::Custom: {
+        gp_Ax3 a = m_frame;
+        if (m_offset != 0.0) a.Translate(gp_Vec(a.Direction()) * m_offset);
+        return a;
+    }
     }
     return gp_Ax3();
 }

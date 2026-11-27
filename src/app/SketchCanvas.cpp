@@ -137,6 +137,11 @@ void SketchCanvas::fit()
         x0 = std::min(x0, a.x() + c.labelX); x1 = std::max(x1, a.x() + c.labelX);
         y0 = std::min(y0, a.y() + c.labelY); y1 = std::max(y1, a.y() + c.labelY);
     }
+    for (const auto& r : m_reference)
+        for (const QPointF& q : r.pts) {
+            if (!any) { x0 = x1 = q.x(); y0 = y1 = q.y(); any = true; }
+            x0 = std::min(x0, q.x()); x1 = std::max(x1, q.x()); y0 = std::min(y0, q.y()); y1 = std::max(y1, q.y());
+        }
     if (any) { x0 = std::min(x0, 0.0); y0 = std::min(y0, 0.0); x1 = std::max(x1, 0.0); y1 = std::max(y1, 0.0); }
     const double w = std::max(x1 - x0, 1.0), h = std::max(y1 - y0, 1.0);
     m_center = {(x0 + x1) / 2, (y0 + y1) / 2};
@@ -479,6 +484,15 @@ void SketchCanvas::paintEvent(QPaintEvent*)
     p.drawLine(QPointF(0, o.y()), QPointF(width(), o.y()));
     p.setPen(QPen(QColor(110, 180, 110), 1, Qt::DashDotLine));
     p.drawLine(QPointF(o.x(), 0), QPointF(o.x(), height()));
+
+    // Bauteilkanten als Bezug
+    for (const auto& r : m_reference) {
+        p.setPen(r.inPlane ? QPen(QColor(95, 105, 120), 1.6) : QPen(QColor(190, 196, 205), 1.0));
+        QPolygonF poly;
+        poly.reserve(r.pts.size());
+        for (const QPointF& q : r.pts) poly << toScreen(q.x(), q.y());
+        p.drawPolyline(poly);
+    }
 
     const bool full = m_lastSolve.dof == 0;
     const auto& P = m_geo.points;

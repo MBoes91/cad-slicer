@@ -12,6 +12,15 @@
 #include <BRepPrimAPI_MakeCylinder.hxx>
 #include <BRepPrimAPI_MakeCone.hxx>
 #include <BRep_Builder.hxx>
+#include <BRep_Tool.hxx>
+#include <BRepAdaptor_Curve.hxx>
+#include <BRepAdaptor_Surface.hxx>
+#include <BRepBuilderAPI_MakeFace.hxx>
+#include <GCPnts_TangentialDeflection.hxx>
+#include <TopExp.hxx>
+#include <TopTools_IndexedMapOfShape.hxx>
+#include <TopoDS.hxx>
+#include <gp_Pln.hxx>
 #include <TopoDS_Compound.hxx>
 #include <BRepBndLib.hxx>
 #include <Bnd_Box.hxx>
@@ -528,6 +537,7 @@ void MainWindow::syncDocTabs(bool home)
 
 void MainWindow::showHome()
 {
+    endPlanePick();
     endFeatureEdit(false);
     if (m_editSketch) finishSketch(true);
     refreshHomePage();
@@ -927,6 +937,15 @@ void MainWindow::buildBrowser()
     });
     connect(m_browser, &QTreeWidget::customContextMenuRequested, this, [this](const QPoint& pos) {
         QTreeWidgetItem* item = m_browser->itemAt(pos);
+        if (item && item->data(0, Qt::UserRole + 2).toInt() > 0) {
+            const auto plane = static_cast<fw::SketchPlane>(item->data(0, Qt::UserRole + 2).toInt() - 1);
+            QMenu menu;
+            menu.addAction(makeIcon(Icon::Sketch), "Neue Skizze", this, [this, plane] {
+                enterSketch(std::make_shared<fw::Sketch>(m_doc.nextName("Skizze"), plane), true);
+            });
+            menu.exec(m_browser->viewport()->mapToGlobal(pos));
+            return;
+        }
         if (item && item->data(0, Qt::UserRole + 1).toBool()) {
             const int idx = item->data(0, Qt::UserRole).toInt();
             QMenu menu;
@@ -973,7 +992,8 @@ void MainWindow::buildBrowser()
     m_panelCancel->setShortcut(Qt::Key_Escape);
     m_panelCancel->setEnabled(false);
     connect(m_panelCancel, &QAction::triggered, this, [this] {
-        if (m_view->navMode() != OcctView::NavMode::None) m_view->setNavMode(OcctView::NavMode::None, false);
+        if (m_pickingPlane) endPlanePick();
+        else if (m_view->navMode() != OcctView::NavMode::None) m_view->setNavMode(OcctView::NavMode::None, false);
         else endFeatureEdit(false);
     });
     addAction(m_panelCancel);
@@ -1103,8 +1123,13 @@ void MainWindow::refreshBrowser()
     auto* root = new QTreeWidgetItem(m_browser, {QString::fromStdString(m_doc.name())});
     root->setIcon(0, makeIcon(Icon::Extrude));
     auto* origin = new QTreeWidgetItem(root, {"Ursprung"});
-    for (const char* n : {"YZ-Ebene", "XZ-Ebene", "XY-Ebene", "X-Achse", "Y-Achse", "Z-Achse", "Mittelpunkt"})
-        new QTreeWidgetItem(origin, {n});
+    for (const char* n : {"YZ-Ebene", "XZ-Ebene", "XY-Ebene", "X-Achse", "Y-Achse", "Z-Achse", "Mittelpunkt"}) {
+        auto* it = new QTreeWidgetItem(origin, {n});
+        const QString name(n);
+        if (name == "XY-Ebene") it->setData(0, Qt::UserRole + 2, 1 + static_cast<int>(fw::SketchPlane::XY));
+        if (name == "XZ-Ebene") it->setData(0, Qt::UserRole + 2, 1 + static_cast<int>(fw::SketchPlane::XZ));
+        if (name == "YZ-Ebene") it->setData(0, Qt::UserRole + 2, 1 + static_cast<int>(fw::SketchPlane::YZ));
+    }
 
     // Skizzen werden unter dem Feature einsortiert, das sie verbraucht
     std::map<fw::Sketch*, QTreeWidgetItem*> placed;
@@ -1167,9 +1192,136 @@ void MainWindow::refreshBrowser()
 
 void MainWindow::cmdNewSketch()
 {
-    NewSketchDialog dlg(this);
-    if (dlg.exec() != QDialog::Accepted) return;
-    enterSketch(std::make_shared<fw::Sketch>(m_doc.nextName("Skizze"), dlg.plane(), dlg.offset()), true);
+    if (m_editFeature || m_editSketch || m_pickingPlane) return;
+    if (m_printPreview) setPrintPreview(false);
+    const auto& ctx = m_view->context();
+    if (ctx.IsNull()) {
+        NewSketchDialog dlg(this);
+        if (dlg.exec() != QDialog::Accepted) return;
+        enterSketch(std::make_shared<fw::Sketch>(m_doc.nextName("Skizze"), dlg.plane(), dlg.offset()), true);
+        return;
+    }
+
+    // Wie in Inventor: Ursprungsebenen einblenden, Ebene oder ebene Flaeche anklicken
+    m_pickingPlane = true;
+    double half = 15.0;
+    if (!m_doc.body().IsNull()) {
+        Bnd_Box box;
+        BRepBndLib::Add(m_doc.body(), box);
+        double x0, y0, z0, x1, y1, z1;
+        box.Get(x0, y0, z0, x1, y1, z1);
+        for (double v : {x0, y0, z0, x1, y1, z1}) half = std::max(half, std::abs(v) * 0.6);
+    }
+    const fw::SketchPlane types[3] = {fw::SketchPlane::XY, fw::SketchPlane::XZ, fw::SketchPlane::YZ};
+    for (fw::SketchPlane t : types) {
+        const gp_Pln pln(fw::Sketch("", t).plane());
+        Handle(AIS_Shape) a = new AIS_Shape(BRepBuilderAPI_MakeFace(pln, -half, half, -half, half).Face());
+        a->SetColor(Quantity_Color(0.96, 0.72, 0.30, Quantity_TOC_sRGB));
+        a->SetTransparency(0.72);
+        ctx->Display(a, AIS_Shaded, 0, false);
+        m_planeAis.push_back(a);
+    }
+    if (!m_bodyAis.IsNull() && ctx->IsDisplayed(m_bodyAis)) {
+        ctx->Deactivate(m_bodyAis);
+        ctx->Activate(m_bodyAis, AIS_Shape::SelectionMode(TopAbs_FACE));
+    }
+    for (QAction* a : m_modelActions) a->setEnabled(false);
+    m_browser->setEnabled(false);
+    m_panelCancel->setEnabled(true);
+    m_view->setDragHandler({[this](const Handle(AIS_InteractiveObject)& o) { return pickSketchPlane(o); }, {}, {}});
+    statusBar()->showMessage(QString::fromUtf8("2D-Skizze: Ursprungsebene oder ebene Fläche des Bauteils anklicken · Esc bricht ab"));
+    m_view->redraw();
+}
+
+bool MainWindow::pickSketchPlane(const Handle(AIS_InteractiveObject)& picked)
+{
+    fw::SketchPtr sketch;
+    const std::string name = m_doc.nextName("Skizze");
+    const fw::SketchPlane types[3] = {fw::SketchPlane::XY, fw::SketchPlane::XZ, fw::SketchPlane::YZ};
+    for (size_t i = 0; i < m_planeAis.size(); ++i)
+        if (picked == m_planeAis[i]) sketch = std::make_shared<fw::Sketch>(name, types[i]);
+
+    const auto& ctx = m_view->context();
+    if (!sketch && picked == m_bodyAis && ctx->HasDetectedShape()) {
+        const TopoDS_Shape shape = ctx->DetectedShape();
+        if (shape.ShapeType() != TopAbs_FACE) return true;
+        const TopoDS_Face face = TopoDS::Face(shape);
+        BRepAdaptor_Surface surf(face);
+        if (surf.GetType() != GeomAbs_Plane) {
+            statusBar()->showMessage(QString::fromUtf8("Skizzen gehen nur auf ebenen Flächen · Esc bricht ab"));
+            return true;
+        }
+        const gp_Pln pln = surf.Plane();
+        gp_Dir n = pln.Axis().Direction();
+        if (face.Orientation() == TopAbs_REVERSED) n.Reverse(); // nach aussen zeigen
+        // Skizzen-X waagerecht legen, damit "oben" in der Skizze auch oben im Bauteil ist
+        const gp_Dir x = std::abs(n.Z()) < 0.99 ? gp_Dir(gp::DZ().Crossed(n)) : gp::DX();
+        const double d = gp_Vec(pln.Location(), gp::Origin()).Dot(gp_Vec(n));
+        const gp_Pnt o = gp::Origin().Translated(gp_Vec(n) * -d);
+        const double tol = 1e-9;
+        if (n.IsEqual(gp::DZ(), tol) && x.IsEqual(gp::DX(), tol))
+            sketch = std::make_shared<fw::Sketch>(name, fw::SketchPlane::XY, o.Z());
+        else if (n.IsEqual(-gp::DY(), tol) && x.IsEqual(gp::DX(), tol))
+            sketch = std::make_shared<fw::Sketch>(name, fw::SketchPlane::XZ, o.Y());
+        else if (n.IsEqual(gp::DX(), tol) && x.IsEqual(gp::DY(), tol))
+            sketch = std::make_shared<fw::Sketch>(name, fw::SketchPlane::YZ, o.X());
+        else
+            sketch = std::make_shared<fw::Sketch>(name, gp_Ax3(o, n, x));
+    }
+    if (!sketch) return false;
+    // Erst nach dem Klick umschalten (der Griff-Handler darf sich nicht selbst loeschen)
+    QTimer::singleShot(0, this, [this, sketch] {
+        endPlanePick();
+        enterSketch(sketch, true);
+    });
+    return true;
+}
+
+void MainWindow::endPlanePick()
+{
+    if (!m_pickingPlane) return;
+    m_pickingPlane = false;
+    const auto& ctx = m_view->context();
+    for (auto& a : m_planeAis) ctx->Remove(a, false);
+    m_planeAis.clear();
+    if (!m_bodyAis.IsNull() && ctx->IsDisplayed(m_bodyAis)) {
+        ctx->Deactivate(m_bodyAis);
+        ctx->Activate(m_bodyAis, 0);
+    }
+    m_view->clearDragHandler();
+    m_panelCancel->setEnabled(false);
+    for (QAction* a : m_modelActions) a->setEnabled(true);
+    m_browser->setEnabled(true);
+    statusBar()->showMessage("Bereit");
+    m_view->redraw();
+}
+
+std::vector<SketchCanvas::RefLine> MainWindow::referenceFor(const fw::Sketch& sk) const
+{
+    std::vector<SketchCanvas::RefLine> out;
+    const TopoDS_Shape& body = m_doc.body();
+    if (body.IsNull()) return out;
+    const gp_Ax3 ax = sk.plane();
+    const gp_Vec X(ax.XDirection()), Y(ax.YDirection()), N(ax.Direction());
+    const gp_Pnt O = ax.Location();
+    TopTools_IndexedMapOfShape edges;
+    TopExp::MapShapes(body, TopAbs_EDGE, edges);
+    for (int i = 1; i <= edges.Extent(); ++i) {
+        const TopoDS_Edge& e = TopoDS::Edge(edges(i));
+        if (BRep_Tool::Degenerated(e)) continue;
+        BRepAdaptor_Curve c(e);
+        GCPnts_TangentialDeflection disc(c, 0.15, 0.05);
+        SketchCanvas::RefLine r;
+        double maxDist = 0;
+        for (int k = 1; k <= disc.NbPoints(); ++k) {
+            const gp_Vec v(O, disc.Value(k));
+            r.pts << QPointF(v.Dot(X), v.Dot(Y));
+            maxDist = std::max(maxDist, std::abs(v.Dot(N)));
+        }
+        r.inPlane = maxDist < 1e-4;
+        if (r.pts.size() > 1) out.push_back(std::move(r));
+    }
+    return out;
 }
 
 void MainWindow::enterSketch(const fw::SketchPtr& sketch, bool isNew)
@@ -1185,6 +1337,7 @@ void MainWindow::enterSketch(const fw::SketchPtr& sketch, bool isNew)
     for (int i = 0; i < m_ribbon->count(); ++i) m_ribbon->setTabEnabled(i, i == si);
     m_ribbon->setCurrentWidget(m_sketchPage);
     m_stack->setCurrentWidget(m_canvas);
+    m_canvas->setReference(referenceFor(*sketch));
     m_canvas->begin(*sketch);
     m_canvas->setFocus();
     m_browser->setEnabled(false);
@@ -1221,7 +1374,7 @@ fw::SketchPtr MainWindow::defaultProfileSketch() const
 
 void MainWindow::cmdExtrude()
 {
-    if (m_editFeature) return;
+    if (m_editFeature || m_pickingPlane) return;
     auto sk = defaultProfileSketch();
     if (!sk) {
         QMessageBox::information(this, "Extrusion", "Bitte zuerst eine 2D-Skizze erstellen.");
@@ -1236,7 +1389,7 @@ void MainWindow::cmdExtrude()
 
 void MainWindow::cmdRevolve()
 {
-    if (m_editFeature) return;
+    if (m_editFeature || m_pickingPlane) return;
     auto sk = defaultProfileSketch();
     if (!sk) {
         QMessageBox::information(this, "Drehung", "Bitte zuerst eine 2D-Skizze erstellen.");

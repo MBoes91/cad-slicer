@@ -353,8 +353,33 @@ static void testModifiers()
     CHECK(copy.modifiers().size() == 2 && copy.modifiers()[1].infillDensity == 1.0 && copy.modifiers()[0].sz == 30);
 }
 
+void testCustomPlane()
+{
+    // Skizze auf der rechten Seitenflaeche eines Quaders (Normale +X), Zapfen nach aussen
+    fw::PartDocument doc;
+    auto sk = std::make_shared<fw::Sketch>("Skizze1", fw::SketchPlane::XY);
+    sk->addRectangle(0, 0, 20, 20);
+    doc.addFeature(sk);
+    doc.addFeature(std::make_shared<fw::ExtrudeFeature>("Extrusion1", sk, 10.0));
+    auto side = std::make_shared<fw::Sketch>("Skizze2", gp_Ax3(gp_Pnt(20, 0, 0), gp::DX(), gp::DY()));
+    side->addCircle(10, 5, 3);
+    doc.addFeature(side);
+    doc.addFeature(std::make_shared<fw::ExtrudeFeature>("Extrusion2", side, 5.0));
+    CHECK(doc.recompute());
+    const double expected = 20.0 * 20.0 * 10.0 + M_PI * 9.0 * 5.0;
+    CHECK(std::abs(volume(doc.body()) - expected) < 1.0);
+
+    // Speichern und Laden erhaelt die Ebene
+    fw::PartDocument copy;
+    CHECK(copy.fromText(doc.toText()));
+    CHECK(copy.toText() == doc.toText());
+    CHECK(copy.recompute());
+    CHECK(std::abs(volume(copy.body()) - expected) < 1.0);
+}
+
 int main()
 {
+    testCustomPlane();
     testModifiers();
     testSketchSolver();
     testFileRoundtrip();

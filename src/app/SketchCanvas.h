@@ -2,6 +2,7 @@
 
 #include "core/Sketch.h"
 
+#include <QPolygonF>
 #include <QWidget>
 
 #include <optional>
@@ -18,6 +19,11 @@ public:
     };
 
     explicit SketchCanvas(QWidget* parent = nullptr);
+
+    // Kanten des Bauteils, auf die Skizzenebene projiziert (grau im Hintergrund).
+    // inPlane: Kante liegt in der Skizzenebene (dunkler dargestellt).
+    struct RefLine { QPolygonF pts; bool inPlane = false; };
+    void setReference(std::vector<RefLine> lines) { m_reference = std::move(lines); }
 
     void begin(const fw::Sketch& sketch);
     const fw::SketchGeometry& geometry() const { return m_geo; }
@@ -43,6 +49,7 @@ protected:
     void resizeEvent(QResizeEvent*) override;
 
 private:
+    std::vector<RefLine> m_reference;
     struct Hit {
         enum Kind { None, Point, Entity, Constraint } kind = None;
         int index = -1;

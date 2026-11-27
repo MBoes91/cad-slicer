@@ -7,7 +7,8 @@
 
 namespace fw {
 
-enum class SketchPlane { XY, XZ, YZ };
+// Custom: beliebige Ebene (z. B. auf einer Bauteilflaeche), Lage in frame()
+enum class SketchPlane { XY, XZ, YZ, Custom };
 
 struct RectangleRefs {
     int lines[4];
@@ -18,6 +19,8 @@ struct RectangleRefs {
 class Sketch : public Feature {
 public:
     Sketch(std::string name, SketchPlane plane, double offset = 0.0);
+    // Skizze auf einer frei liegenden Ebene (Ursprung, Normale, X-Richtung)
+    Sketch(std::string name, const gp_Ax3& frame);
 
     FeatureType type() const override { return FeatureType::Sketch; }
     TopoDS_Shape apply(const TopoDS_Shape& body) const override { return body; }
@@ -26,6 +29,7 @@ public:
     double offset() const { return m_offset; }
     void setOffset(double o) { m_offset = o; }
     gp_Ax3 plane() const;
+    const gp_Ax3& frame() const { return m_frame; }
 
     SketchGeometry& geometry() { return m_geo; }
     const SketchGeometry& geometry() const { return m_geo; }
@@ -46,6 +50,7 @@ public:
 private:
     SketchPlane m_planeType;
     double m_offset;
+    gp_Ax3 m_frame; // nur fuer SketchPlane::Custom
     SketchGeometry m_geo;
 };
 

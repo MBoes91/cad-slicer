@@ -2,6 +2,7 @@
 
 #include "core/PartDocument.h"
 #include "slicer/Slicer.h"
+#include "app/SketchCanvas.h"
 
 #include <AIS_Shape.hxx>
 
@@ -28,7 +29,6 @@ class QPushButton;
 class QMenu;
 class QTimer;
 class QStackedWidget;
-class SketchCanvas;
 class QTabBar;
 class QToolBar;
 class QListWidget;
@@ -69,6 +69,9 @@ private:
     void previewFeature();
     void updateArrow();
     void dragArrow(const QPointF& start, const QPointF& now);
+    bool pickSketchPlane(const Handle(AIS_InteractiveObject)& picked);
+    void endPlanePick();
+    std::vector<SketchCanvas::RefLine> referenceFor(const fw::Sketch& sk) const;
 
     // Modell
     void rebuild(bool fit = false);
@@ -160,6 +163,8 @@ private:
     gp_Dir m_arrowDir;
     bool m_arrowSymmetric = false;
     double m_dragStartValue = 0.0;
+    bool m_pickingPlane = false;
+    std::vector<Handle(AIS_Shape)> m_planeAis;
     bool m_inPrintEnv = false;
     int m_visualStyle = 1; // 0 schattiert, 1 mit Kanten, 2 Drahtkoerper
     QAction* m_styleShaded = nullptr;

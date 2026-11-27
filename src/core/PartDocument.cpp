@@ -153,7 +153,14 @@ std::string PartDocument::toText() const
         const int sup = f->isSuppressed() ? 1 : 0;
         if (auto s = std::dynamic_pointer_cast<Sketch>(f)) {
             o << "sketch = " << safeName(s->name()) << ";plane=" << static_cast<int>(s->planeType())
-              << ";offset=" << s->offset() << ";suppressed=" << sup << '\n';
+              << ";offset=" << s->offset();
+            if (s->planeType() == SketchPlane::Custom) {
+                const gp_Ax3& f = s->frame();
+                o << ";frame=" << f.Location().X() << ',' << f.Location().Y() << ',' << f.Location().Z() << ','
+                  << f.Direction().X() << ',' << f.Direction().Y() << ',' << f.Direction().Z() << ','
+                  << f.XDirection().X() << ',' << f.XDirection().Y() << ',' << f.XDirection().Z();
+            }
+            o << ";suppressed=" << sup << '\n';
             const auto& g = s->geometry();
             for (size_t i = 1; i < g.points.size(); ++i)
                 o << "pt = " << g.points[i].x << ';' << g.points[i].y << '\n';
@@ -207,8 +214,17 @@ bool PartDocument::fromText(const std::string& text, std::string* error)
                 name = val;
             } else if (key == "sketch") {
                 const auto a = attrs(parts);
-                current = std::make_shared<Sketch>(parts.at(0), static_cast<SketchPlane>(static_cast<int>(num(need(a, "plane")))),
-                                                   num(need(a, "offset")));
+                const auto planeType = static_cast<SketchPlane>(static_cast<int>(num(need(a, "plane"))));
+                if (planeType == SketchPlane::Custom) {
+                    const auto v = split(need(a, "frame"), ',');
+                    if (v.size() != 9) throw std::invalid_argument("Ungueltige Skizzenebene");
+                    current = std::make_shared<Sketch>(parts.at(0),
+                        gp_Ax3(gp_Pnt(num(v[0]), num(v[1]), num(v[2])), gp_Dir(num(v[3]), num(v[4]), num(v[5])),
+                               gp_Dir(num(v[6]), num(v[7]), num(v[8]))));
+                    current->setOffset(num(need(a, "offset")));
+                } else {
+                    current = std::make_shared<Sketch>(parts.at(0), planeType, num(need(a, "offset")));
+                }
                 current->setSuppressed(a.count("suppressed") && a.at("suppressed") == "1");
                 sketchesByName[current->name()] = current;
                 features.push_back(current);
