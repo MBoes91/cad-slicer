@@ -3,6 +3,7 @@
 #include "core/Features.h"
 #include "slicer/PrinterProfile.h"
 #include "slicer/Settings.h"
+#include "core/PrintModifier.h"
 
 #include <QDialog>
 
@@ -90,6 +91,20 @@ private:
         class QFormLayout* form;
     };
     std::vector<Row> m_rows;
+};
+
+// Druck-Modifikator anlegen/bearbeiten
+class ModifierDialog : public QDialog {
+    Q_OBJECT
+public:
+    ModifierDialog(const fw::PrintModifier& m, QWidget* parent = nullptr);
+    fw::PrintModifier modifier() const;
+private:
+    fw::PrintModifier m_base;
+    QComboBox* m_role;
+    QComboBox* m_shape;
+    QDoubleSpinBox *m_cx, *m_cy, *m_cz, *m_sx, *m_sy, *m_sz, *m_density;
+    QComboBox* m_pattern;
 };
 
 // Ein Hoehen-Ereignis anlegen (z. B. aus der Schichtvorschau)

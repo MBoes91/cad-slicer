@@ -284,8 +284,78 @@ static void testSketchSolver()
     CHECK(threw);
 }
 
+static void testModifiers()
+{
+    // Saeule mit auskragender Platte (wie testSupports), Bauteilkoordinaten: Saeule x 15..25, Platte x 0..40
+    fw::PartDocument doc;
+    auto sk = std::make_shared<fw::Sketch>("Skizze1", fw::SketchPlane::XY);
+    sk->addRectangle(15, 0, 10, 10);
+    doc.addFeature(sk);
+    doc.addFeature(std::make_shared<fw::ExtrudeFeature>("Extrusion1", sk, 20.0));
+    auto sk2 = std::make_shared<fw::Sketch>("Skizze2", fw::SketchPlane::XY, 18.0);
+    sk2->addRectangle(0, 0, 40, 10);
+    doc.addFeature(sk2);
+    doc.addFeature(std::make_shared<fw::ExtrudeFeature>("Extrusion2", sk2, 4.0));
+    CHECK(doc.recompute());
+    auto supportCount = [](const fw::SliceResult& r, size_t layer) {
+        int c = 0;
+        for (const auto& tp : r.layers.at(layer).paths) c += tp.type == fw::PathType::Support;
+        return c;
+    };
+    auto maxSupportX = [](const fw::SliceResult& r, size_t layer) {
+        double m = -1e9;
+        for (const auto& tp : r.layers.at(layer).paths)
+            if (tp.type == fw::PathType::Support) for (const auto& v : tp.points) m = std::max(m, v.x);
+        return m;
+    };
+    fw::PrinterProfile p;
+
+    // Stuetze nur per "erzwingen" links der Saeule (Stuetzmodus aus)
+    fw::PrintModifier enf;
+    enf.role = fw::PrintModifier::Role::SupportEnforcer;
+    enf.cx = 7; enf.cy = 5; enf.cz = 10; enf.sx = 14; enf.sy = 10; enf.sz = 30;
+    fw::SliceResult r1 = fw::slice(doc.body(), p, {}, {enf});
+    CHECK(r1.ok && supportCount(r1, 50) > 0);
+    CHECK(maxSupportX(r1, 50) < 110 - 5); // nur links der Saeule (Bettmitte 110 = Bauteil x 20)
+
+    // Stuetzen ueberall, rechte Seite gesperrt
+    p.supportMode = static_cast<int>(fw::SupportMode::Everywhere);
+    fw::PrintModifier blk = enf;
+    blk.role = fw::PrintModifier::Role::SupportBlocker;
+    blk.cx = 33; blk.sx = 20;
+    fw::SliceResult r2 = fw::slice(doc.body(), p, {}, {blk});
+    CHECK(r2.ok && supportCount(r2, 50) > 0 && maxSupportX(r2, 50) < 110 - 5);
+
+    // Infill-Zone mit 100 % im oberen Teil der Platte -> mehr Fuellung als ohne
+    fw::PrinterProfile q;
+    q.topLayers = 0; q.bottomLayers = 0;
+    fw::PrintModifier zone;
+    zone.cx = 20; zone.cy = 5; zone.cz = 10; zone.sx = 10; zone.sy = 10; zone.sz = 8;
+    zone.infillDensity = 1.0;
+    auto infillLen = [](const fw::SliceResult& r, size_t layer) {
+        double len = 0;
+        for (const auto& tp : r.layers.at(layer).paths)
+            if (tp.type == fw::PathType::Infill)
+                for (size_t k = 1; k < tp.points.size(); ++k)
+                    len += std::hypot(tp.points[k].x - tp.points[k - 1].x, tp.points[k].y - tp.points[k - 1].y);
+        return len;
+    };
+    fw::SliceResult a = fw::slice(doc.body(), q);
+    fw::SliceResult b = fw::slice(doc.body(), q, {}, {zone});
+    CHECK(a.ok && b.ok);
+    CHECK(infillLen(b, 50) > 3 * infillLen(a, 50));
+    CHECK(std::abs(infillLen(b, 80) - infillLen(a, 80)) < 1e-6); // ausserhalb der Zone unveraendert
+
+    // Modifikatoren werden mit dem Bauteil gespeichert
+    doc.modifiers() = {enf, zone};
+    fw::PartDocument copy;
+    CHECK(copy.fromText(doc.toText()));
+    CHECK(copy.modifiers().size() == 2 && copy.modifiers()[1].infillDensity == 1.0 && copy.modifiers()[0].sz == 30);
+}
+
 int main()
 {
+    testModifiers();
     testSketchSolver();
     testFileRoundtrip();
     testCancel();

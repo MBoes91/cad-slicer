@@ -179,7 +179,18 @@ void addLoops(std::vector<ToolPath>& out, const Paths& paths, PathType type)
 
 struct Cancelled {};
 
-SliceResult slice(const TopoDS_Shape& bodyIn, const PrinterProfile& pp, const ProgressFn& progress)
+gp_Vec bedPlacement(const TopoDS_Shape& body, const PrinterProfile& pp)
+{
+    Bnd_Box box;
+    BRepBndLib::Add(body, box);
+    if (box.IsVoid()) return {};
+    double x0, y0, z0, x1, y1, z1;
+    box.Get(x0, y0, z0, x1, y1, z1);
+    return gp_Vec(pp.bedX / 2 - (x0 + x1) / 2, pp.bedY / 2 - (y0 + y1) / 2, -z0);
+}
+
+SliceResult slice(const TopoDS_Shape& bodyIn, const PrinterProfile& pp, const ProgressFn& progress,
+                  const std::vector<PrintModifier>& modifiers)
 {
     SliceResult res;
     auto report = [&](double f) {
@@ -203,7 +214,35 @@ SliceResult slice(const TopoDS_Shape& bodyIn, const PrinterProfile& pp, const Pr
             return res;
         }
         gp_Trsf move;
-        move.SetTranslation(gp_Vec(pp.bedX / 2 - (x0 + x1) / 2, pp.bedY / 2 - (y0 + y1) / 2, -z0));
+        const gp_Vec shift(pp.bedX / 2 - (x0 + x1) / 2, pp.bedY / 2 - (y0 + y1) / 2, -z0);
+        move.SetTranslation(shift);
+
+        // Grundriss eines Modifikators in Hoehe z (Bettkoordinaten); leer, wenn ausserhalb
+        auto footprint = [&](const PrintModifier& m, double z) {
+            Paths out;
+            const double cz = m.cz + shift.Z();
+            if (z < cz - m.sz / 2 || z > cz + m.sz / 2) return out;
+            const double cx = m.cx + shift.X(), cy = m.cy + shift.Y();
+            Polygon2 poly;
+            if (m.shape == PrintModifier::Shape::Box) {
+                poly = {{cx - m.sx / 2, cy - m.sy / 2}, {cx + m.sx / 2, cy - m.sy / 2},
+                        {cx + m.sx / 2, cy + m.sy / 2}, {cx - m.sx / 2, cy + m.sy / 2}};
+            } else {
+                const int segs = 64;
+                for (int k = 0; k < segs; ++k) {
+                    const double a = 2 * M_PI * k / segs;
+                    poly.push_back({cx + m.sx / 2 * std::cos(a), cy + m.sx / 2 * std::sin(a)});
+                }
+            }
+            out.push_back(toPath(poly));
+            return out;
+        };
+        auto roleFootprint = [&](PrintModifier::Role role, double z) {
+            Paths all;
+            for (const auto& m : modifiers)
+                if (m.role == role) all = boolean(all, footprint(m, z), ClipperLib::ctUnion);
+            return all;
+        };
         const TopoDS_Shape body = BRepBuilderAPI_Transform(bodyIn, move, true).Shape();
 
         report(0.0);
@@ -237,7 +276,9 @@ SliceResult slice(const TopoDS_Shape& bodyIn, const PrinterProfile& pp, const Pr
         // --- Stuetzbereiche ----------------------------------------------------------
         std::vector<Paths> support(n);
         const auto mode = static_cast<SupportMode>(pp.supportMode);
-        if (mode != SupportMode::None && n > 1) {
+        const bool hasEnforcer = std::any_of(modifiers.begin(), modifiers.end(),
+            [](const PrintModifier& m) { return m.role == PrintModifier::Role::SupportEnforcer; });
+        if ((mode != SupportMode::None || hasEnforcer) && n > 1) {
             const double allowed = pp.layerHeight * std::tan(pp.supportAngle * M_PI / 180.0);
             // Ueberhang je Schicht: was nicht von der Schicht darunter (plus erlaubtem Versatz) getragen wird
             std::vector<Paths> overhang(n);
@@ -248,7 +289,14 @@ SliceResult slice(const TopoDS_Shape& bodyIn, const PrinterProfile& pp, const Pr
                 Paths big;
                 for (auto& p : o)
                     if (std::abs(ClipperLib::Area(p)) / (kScale * kScale) >= pp.supportMinArea) big.push_back(p);
-                overhang[i] = big;
+                overhang[i] = mode == SupportMode::None ? Paths{} : big;
+                // Erzwungene Stuetzen: jede nach unten zeigende Flaeche im Modifikator
+                const double zMid = tops[i] - pp.layerHeight / 2;
+                Paths forced = roleFootprint(PrintModifier::Role::SupportEnforcer, zMid);
+                if (!forced.empty()) {
+                    forced = boolean(boolean(region[i], region[i - 1], ClipperLib::ctDifference), forced, ClipperLib::ctIntersection);
+                    overhang[i] = boolean(overhang[i], forced, ClipperLib::ctUnion);
+                }
             }
             const size_t gap = static_cast<size_t>(std::max(0, pp.supportZGapLayers));
             Paths carry;
@@ -267,6 +315,15 @@ SliceResult slice(const TopoDS_Shape& bodyIn, const PrinterProfile& pp, const Pr
                 if (mode == SupportMode::BuildPlateOnly) {
                     s = boolean(s, below[jj], ClipperLib::ctDifference);
                     carry = boolean(carry, below[jj], ClipperLib::ctDifference);
+                }
+                const double zMid = tops[jj] - (jj == 0 ? pp.firstLayerHeight : pp.layerHeight) / 2;
+                const Paths blocked = roleFootprint(PrintModifier::Role::SupportBlocker, zMid);
+                if (!blocked.empty()) {
+                    s = boolean(s, blocked, ClipperLib::ctDifference);
+                    Paths keep;
+                    for (auto& p : s)
+                        if (std::abs(ClipperLib::Area(p)) / (kScale * kScale) >= pp.supportMinArea) keep.push_back(p);
+                    s = keep;
                 }
                 support[jj] = s;
             }
@@ -311,17 +368,31 @@ SliceResult slice(const TopoDS_Shape& bodyIn, const PrinterProfile& pp, const Pr
 
             for (auto& l : lineFill(solid, w, angle))
                 L.paths.push_back({PathType::Solid, std::move(l), false});
-            if (pp.infillDensity > 0.001) {
+            auto fillSparse = [&](const Paths& area, double density, int pattern) {
+                if (area.empty() || density <= 0.001) return;
                 std::vector<Polygon2> infill;
-                if (static_cast<InfillPattern>(pp.infillPattern) == InfillPattern::Grid) {
-                    infill = lineFill(sparse, 2 * w / pp.infillDensity, pp.infillAngle);
-                    auto cross = lineFill(sparse, 2 * w / pp.infillDensity, pp.infillAngle + 90.0);
+                if (density >= 0.999) {
+                    infill = lineFill(area, w, angle);
+                } else if (static_cast<InfillPattern>(pattern) == InfillPattern::Grid) {
+                    infill = lineFill(area, 2 * w / density, pp.infillAngle);
+                    auto cross = lineFill(area, 2 * w / density, pp.infillAngle + 90.0);
                     infill.insert(infill.end(), cross.begin(), cross.end());
                 } else {
-                    infill = lineFill(sparse, w / pp.infillDensity, angle);
+                    infill = lineFill(area, w / density, angle);
                 }
                 for (auto& l : infill) L.paths.push_back({PathType::Infill, std::move(l), false});
+            };
+            // Infill-Zonen (in Reihenfolge) schneiden ihren Bereich aus der normalen Fuellung
+            const double zMid = tops[i] - L.height / 2;
+            for (const auto& m : modifiers) {
+                if (m.role != PrintModifier::Role::InfillZone || sparse.empty()) continue;
+                const Paths fp = footprint(m, zMid);
+                if (fp.empty()) continue;
+                const Paths zone = boolean(sparse, fp, ClipperLib::ctIntersection);
+                sparse = boolean(sparse, fp, ClipperLib::ctDifference);
+                fillSparse(zone, m.infillDensity, m.infillPattern);
             }
+            fillSparse(sparse, pp.infillDensity, pp.infillPattern);
         }
 
         // --- Stuetzen fuellen (Linien in gleicher Richtung, damit sie sich stapeln)

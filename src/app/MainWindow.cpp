@@ -8,6 +8,9 @@
 
 #include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
+#include <BRepPrimAPI_MakeCylinder.hxx>
+#include <BRepBndLib.hxx>
+#include <Bnd_Box.hxx>
 #include <Prs3d_LineAspect.hxx>
 #include <Prs3d_Drawer.hxx>
 
@@ -156,6 +159,21 @@ QIcon makeIcon(Icon kind)
         p.setPen(QPen(blue, 4)); p.drawEllipse(12, 12, 40, 40);
         break;
     }
+    return QIcon(pm);
+}
+
+QIcon modifierIcon(const QColor& c)
+{
+    QPixmap pm(64, 64);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    QColor fill = c;
+    fill.setAlpha(110);
+    p.setPen(QPen(c, 3, Qt::DashLine));
+    p.setBrush(fill);
+    p.drawPolygon(QPolygon({{10, 26}, {24, 12}, {54, 12}, {54, 40}, {40, 54}, {10, 54}}));
+    p.drawLine(10, 26, 40, 26); p.drawLine(40, 26, 54, 12); p.drawLine(40, 26, 40, 54);
     return QIcon(pm);
 }
 
@@ -309,7 +327,14 @@ void MainWindow::buildRibbon()
     auto* aEvent = act("Ereignis", Icon::Pause, {}, [this] { cmdAddEventAtLayer(); });
     aEvent->setToolTip(QString::fromUtf8("Pause, Filamentwechsel, Temperatur o. Ä. ab der angezeigten Schicht einfügen"));
 
-    m_modelActions = {aSketch, aExtrude, aRevolve, aHole, aStl, aSlice, m_previewAction, aSave, aSettings, aEvent};
+    auto* aZone = act("Infill-\nZone", Icon::Fit, {}, [this] { cmdAddModifier(fw::PrintModifier::Role::InfillZone); });
+    auto* aEnforce = act(QString::fromUtf8("Stütze\nerzwingen"), Icon::Slice, {}, [this] { cmdAddModifier(fw::PrintModifier::Role::SupportEnforcer); });
+    auto* aBlock = act(QString::fromUtf8("Stütze\nsperren"), Icon::Cancel, {}, [this] { cmdAddModifier(fw::PrintModifier::Role::SupportBlocker); });
+    aZone->setIcon(modifierIcon(QColor(60, 160, 90)));
+    aEnforce->setIcon(modifierIcon(QColor(40, 170, 200)));
+    aBlock->setIcon(modifierIcon(QColor(210, 70, 60)));
+
+    m_modelActions = {aZone, aEnforce, aBlock, aSketch, aExtrude, aRevolve, aHole, aStl, aSlice, m_previewAction, aSave, aSettings, aEvent};
 
     // --- Skizze (nur im Skizzenmodus sichtbar)
     auto* toolGroup = new QActionGroup(this);
@@ -395,6 +420,7 @@ void MainWindow::buildRibbon()
     auto* printerPanel = makePanel(QString::fromUtf8("Creality Ender 3 V2"), {aSettings, aSlice});
     static_cast<QHBoxLayout*>(static_cast<QVBoxLayout*>(printerPanel->layout())->itemAt(0)->layout())->insertWidget(0, m_profileLabel);
     m_ribbon->addTab(makeRibbonPage({printerPanel,
+                                     makePanel("Modifikatoren", {aZone, aEnforce, aBlock}),
                                      makePanel("Ergebnis", {m_previewAction, aSave}), layerPanel}),
                      "3D-Druck");
     m_ribbon->addTab(makeRibbonPage({makePanel("Zeichnen", {sSelect, sLine, sRect, sCircle, sArc}),
@@ -476,10 +502,23 @@ void MainWindow::buildBrowser()
     m_browser->setMinimumWidth(240);
 
     connect(m_browser, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem* item) {
+        if (item->data(0, Qt::UserRole + 1).toBool()) { cmdEditModifier(item->data(0, Qt::UserRole).toInt()); return; }
         if (auto f = featureOf(item)) cmdEditFeature(f);
     });
     connect(m_browser, &QTreeWidget::customContextMenuRequested, this, [this](const QPoint& pos) {
-        auto f = featureOf(m_browser->itemAt(pos));
+        QTreeWidgetItem* item = m_browser->itemAt(pos);
+        if (item && item->data(0, Qt::UserRole + 1).toBool()) {
+            const int idx = item->data(0, Qt::UserRole).toInt();
+            QMenu menu;
+            menu.addAction("Bearbeiten", this, [this, idx] { cmdEditModifier(idx); });
+            menu.addAction(QString::fromUtf8("Löschen"), this, [this, idx] {
+                m_doc.modifiers().erase(m_doc.modifiers().begin() + idx);
+                rebuild();
+            });
+            menu.exec(m_browser->viewport()->mapToGlobal(pos));
+            return;
+        }
+        auto f = featureOf(item);
         if (!f) return;
         QMenu menu;
         menu.addAction(f->type() == fw::FeatureType::Sketch ? "Skizze bearbeiten" : "Feature bearbeiten",
@@ -578,6 +617,8 @@ void MainWindow::rebuild(bool fit)
         m_sketchAis.push_back(a);
     }
 
+    displayModifiers(gp_Vec());
+
     refreshBrowser();
     if (fit) m_view->fitAll();
     else m_view->redraw();
@@ -635,6 +676,23 @@ void MainWindow::refreshBrowser()
             it->setForeground(0, Qt::red);
             it->setToolTip(0, QString::fromStdString(m_doc.errorMessage()));
         }
+    }
+    if (!m_doc.modifiers().empty()) {
+        auto* modRoot = new QTreeWidgetItem(root, {"Druck-Modifikatoren"});
+        modRoot->setIcon(0, makeIcon(Icon::Slice));
+        for (size_t i = 0; i < m_doc.modifiers().size(); ++i) {
+            const auto& mod = m_doc.modifiers()[i];
+            QString label = QString::fromStdString(mod.name) + " (" + QString::fromUtf8(fw::modifierRoleName(mod.role));
+            if (mod.role == fw::PrintModifier::Role::InfillZone) label += QString(", %1 %").arg(qRound(mod.infillDensity * 100));
+            label += ")";
+            auto* it = new QTreeWidgetItem(modRoot, {label});
+            it->setData(0, Qt::UserRole, static_cast<int>(i));
+            it->setData(0, Qt::UserRole + 1, true);
+            it->setIcon(0, modifierIcon(mod.role == fw::PrintModifier::Role::InfillZone ? QColor(60, 160, 90)
+                                        : mod.role == fw::PrintModifier::Role::SupportEnforcer ? QColor(40, 170, 200)
+                                                                                           : QColor(210, 70, 60)));
+        }
+        modRoot->setExpanded(true);
     }
     root->setExpanded(true);
 }
@@ -785,13 +843,14 @@ void MainWindow::startSlice(std::function<void()> then)
 
     const TopoDS_Shape body = m_doc.body();
     const fw::PrinterProfile profile = m_profile;
+    const std::vector<fw::PrintModifier> modifiers = m_doc.modifiers();
     auto* progress = &m_sliceProgress;
     auto* cancel = &m_cancelSlice;
-    m_sliceWatcher->setFuture(QtConcurrent::run([body, profile, progress, cancel] {
+    m_sliceWatcher->setFuture(QtConcurrent::run([body, profile, modifiers, progress, cancel] {
         return fw::slice(body, profile, [progress, cancel](double f) {
             progress->store(f);
             return !cancel->load();
-        });
+        }, modifiers);
     }));
 }
 
@@ -886,6 +945,7 @@ void MainWindow::setPrintPreview(bool on)
         if (!m_bodyAis.IsNull()) ctx->Erase(m_bodyAis, false);
         for (auto& s : m_sketchAis) ctx->Erase(s, false);
         ctx->Display(m_bedAis, AIS_Shaded, -1, false);
+        displayModifiers(fw::bedPlacement(m_doc.body(), m_profile));
         m_layerSlider->blockSignals(true);
         m_layerSlider->setRange(1, static_cast<int>(m_slice.layers.size()));
         m_layerSlider->setValue(static_cast<int>(m_slice.layers.size()));
@@ -896,6 +956,7 @@ void MainWindow::setPrintPreview(bool on)
         if (!m_previewAis.IsNull()) ctx->Remove(m_previewAis, false);
         m_previewAis.Nullify();
         if (!m_bedAis.IsNull()) ctx->Erase(m_bedAis, false);
+        displayModifiers(gp_Vec());
         if (!m_bodyAis.IsNull()) ctx->Display(m_bodyAis, AIS_Shaded, 0, false);
         for (auto& s : m_sketchAis) ctx->Display(s, AIS_WireFrame, -1, false);
         m_layerLabel->setText("Schicht: –");
@@ -1102,4 +1163,67 @@ void MainWindow::closeEvent(QCloseEvent* e)
     }
     if (maybeSave()) e->accept();
     else e->ignore();
+}
+
+// --- Druck-Modifikatoren ------------------------------------------------------------
+
+void MainWindow::displayModifiers(const gp_Vec& shift)
+{
+    const auto& ctx = m_view->context();
+    if (ctx.IsNull()) return;
+    for (auto& a : m_modifierAis) ctx->Remove(a, false);
+    m_modifierAis.clear();
+    for (const auto& m : m_doc.modifiers()) {
+        TopoDS_Shape s;
+        const gp_Pnt c(m.cx + shift.X(), m.cy + shift.Y(), m.cz + shift.Z());
+        if (m.shape == fw::PrintModifier::Shape::Box)
+            s = BRepPrimAPI_MakeBox(gp_Pnt(c.X() - m.sx / 2, c.Y() - m.sy / 2, c.Z() - m.sz / 2), m.sx, m.sy, m.sz).Shape();
+        else
+            s = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(c.X(), c.Y(), c.Z() - m.sz / 2), gp::DZ()), m.sx / 2, m.sz).Shape();
+        Handle(AIS_Shape) a = new AIS_Shape(s);
+        const Quantity_Color col = m.role == fw::PrintModifier::Role::InfillZone ? Quantity_Color(0.25, 0.65, 0.35, Quantity_TOC_sRGB)
+            : m.role == fw::PrintModifier::Role::SupportEnforcer ? Quantity_Color(0.15, 0.65, 0.80, Quantity_TOC_sRGB)
+                                                                  : Quantity_Color(0.85, 0.30, 0.25, Quantity_TOC_sRGB);
+        a->SetColor(col);
+        a->SetTransparency(0.75);
+        ctx->Display(a, AIS_Shaded, -1, false);
+        m_modifierAis.push_back(a);
+    }
+    m_view->redraw();
+}
+
+void MainWindow::cmdAddModifier(fw::PrintModifier::Role role)
+{
+    if (m_doc.body().IsNull()) {
+        QMessageBox::information(this, "Modifikator", "Bitte zuerst einen Körper modellieren.");
+        return;
+    }
+    Bnd_Box box;
+    BRepBndLib::Add(m_doc.body(), box);
+    double x0, y0, z0, x1, y1, z1;
+    box.Get(x0, y0, z0, x1, y1, z1);
+    fw::PrintModifier m;
+    m.role = role;
+    for (int i = 1;; ++i) {
+        const std::string n = "Modifikator" + std::to_string(i);
+        if (std::none_of(m_doc.modifiers().begin(), m_doc.modifiers().end(), [&](const fw::PrintModifier& o) { return o.name == n; })) {
+            m.name = n;
+            break;
+        }
+    }
+    m.cx = (x0 + x1) / 2; m.cy = (y0 + y1) / 2; m.cz = (z0 + z1) / 2;
+    m.sx = std::max(1.0, (x1 - x0) / 3); m.sy = std::max(1.0, (y1 - y0) / 3); m.sz = std::max(1.0, z1 - z0 + 2);
+    ModifierDialog dlg(m, this);
+    if (dlg.exec() != QDialog::Accepted) return;
+    m_doc.modifiers().push_back(dlg.modifier());
+    rebuild();
+}
+
+void MainWindow::cmdEditModifier(int index)
+{
+    if (index < 0 || index >= static_cast<int>(m_doc.modifiers().size())) return;
+    ModifierDialog dlg(m_doc.modifiers()[static_cast<size_t>(index)], this);
+    if (dlg.exec() != QDialog::Accepted) return;
+    m_doc.modifiers()[static_cast<size_t>(index)] = dlg.modifier();
+    rebuild();
 }

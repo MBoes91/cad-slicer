@@ -62,6 +62,9 @@ private:
     void cmdSaveGcode();
     void cmdPrintSettings();
     void cmdAddEventAtLayer();
+    void cmdAddModifier(fw::PrintModifier::Role role);
+    void cmdEditModifier(int index);
+    void displayModifiers(const gp_Vec& shift);
     void setPrintPreview(bool on);
     void startSlice(std::function<void()> then);
     void sliceFinished();
@@ -109,6 +112,7 @@ private:
     Handle(AIS_Shape) m_bodyAis;
     std::vector<Handle(AIS_Shape)> m_sketchAis;
     Handle(AIS_Shape) m_bedAis;
+    std::vector<Handle(AIS_Shape)> m_modifierAis;
     Handle(ToolpathPreview) m_previewAis;
     bool m_printPreview = false;
     std::map<QTreeWidgetItem*, fw::FeaturePtr> m_itemFeature;

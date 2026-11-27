@@ -37,6 +37,7 @@ Technik: C++17, Qt 6 (Oberfläche), OpenCascade (CAD-Kernel), Clipper (2D-Polygo
 - Höhen-Ereignisse: Pause (Kopf parken, M0), Filamentwechsel (M600), Düsen-/Betttemperatur, Lüfter,
   Geschwindigkeit, Fluss oder eigener G-Code ab einer Höhe; direkt aus der Schichtvorschau einfügbar
 - Automatische Stützen (überall oder nur vom Druckbett) mit Überhangwinkel, Dichte und Abständen
+- Druck-Modifikatoren (Quader/Zylinder, im Bauteil gespeichert): Infill-Zonen mit eigener Dichte, Stützen erzwingen, Stützen sperren
 - Brim, Gitter- oder Linien-Füllung, Z-Naht hinten, eigene Temperaturen für die erste Schicht
 - Schätzung von Druckzeit, Filamentlänge, Gewicht und Kosten
 - Farbige Schichtvorschau auf dem Druckbett, Druckzeit- und Filamentschätzung
@@ -51,7 +52,7 @@ Technik: C++17, Qt 6 (Oberfläche), OpenCascade (CAD-Kernel), Clipper (2D-Polygo
 1. Skizzen auf Bauteilflächen, Bohrung, Fase/Rundung, Muster, Spiegeln
 2. Parameter-Tabelle mit Formeln
 3. STEP-Import/-Export, STL-Import
-4. Slicer: Modifikator-Körper (Infill-Zonen, Stützen erzwingen/sperren), Baumstützen
+4. Slicer: Baumstützen, Brücken-Erkennung, Combing
 
 ## Programm unter Windows 10 holen
 

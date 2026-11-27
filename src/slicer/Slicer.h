@@ -2,8 +2,10 @@
 
 #include "slicer/MeshSlicer.h"
 #include "slicer/PrinterProfile.h"
+#include "core/PrintModifier.h"
 
 #include <TopoDS_Shape.hxx>
+#include <gp_Vec.hxx>
 
 #include <functional>
 #include <string>
@@ -44,6 +46,10 @@ struct SliceResult {
 // Das Teil wird mittig auf das Druckbett gestellt (tiefster Punkt auf Z=0).
 // progress(0..1) wird regelmaessig aufgerufen; gibt sie false zurueck, wird abgebrochen.
 using ProgressFn = std::function<bool(double)>;
-SliceResult slice(const TopoDS_Shape& body, const PrinterProfile& profile, const ProgressFn& progress = {});
+SliceResult slice(const TopoDS_Shape& body, const PrinterProfile& profile, const ProgressFn& progress = {},
+                  const std::vector<PrintModifier>& modifiers = {});
+
+// Verschiebung, mit der der Slicer das Teil auf das Bett stellt (mittig, Unterseite auf Z=0).
+gp_Vec bedPlacement(const TopoDS_Shape& body, const PrinterProfile& profile);
 
 } // namespace fw

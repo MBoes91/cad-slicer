@@ -123,10 +123,21 @@ std::string need(const std::map<std::string, std::string>& m, const char* key)
 
 } // namespace
 
+const char* modifierRoleName(PrintModifier::Role r)
+{
+    switch (r) {
+    case PrintModifier::Role::InfillZone: return "Infill-Zone";
+    case PrintModifier::Role::SupportEnforcer: return "Stütze erzwingen";
+    case PrintModifier::Role::SupportBlocker: return "Stütze sperren";
+    }
+    return "?";
+}
+
 void PartDocument::clear(std::string name)
 {
     m_name = std::move(name);
     m_features.clear();
+    m_modifiers.clear();
     m_body.Nullify();
     m_errorFeature.reset();
     m_errorMessage.clear();
@@ -162,6 +173,10 @@ std::string PartDocument::toText() const
               << ";op=" << static_cast<int>(r->operation()) << ";suppressed=" << sup << '\n';
         }
     }
+    for (const auto& m : m_modifiers)
+        o << "modifier = " << safeName(m.name) << ";role=" << static_cast<int>(m.role) << ";shape=" << static_cast<int>(m.shape)
+          << ";c=" << m.cx << ',' << m.cy << ',' << m.cz << ";s=" << m.sx << ',' << m.sy << ',' << m.sz
+          << ";infill=" << m.infillDensity << ";pattern=" << m.infillPattern << '\n';
     return o.str();
 }
 
@@ -170,6 +185,7 @@ bool PartDocument::fromText(const std::string& text, std::string* error)
     std::string name = "Bauteil1";
     std::vector<FeaturePtr> features;
     std::map<std::string, SketchPtr> sketchesByName;
+    std::vector<PrintModifier> modifiers;
     SketchPtr current;
 
     std::istringstream in(text);
@@ -226,6 +242,19 @@ bool PartDocument::fromText(const std::string& text, std::string* error)
                 } else {
                     throw std::invalid_argument("Unvollständiges Element");
                 }
+            } else if (key == "modifier") {
+                const auto a = attrs(parts);
+                PrintModifier m;
+                m.name = parts.at(0);
+                m.role = static_cast<PrintModifier::Role>(static_cast<int>(num(need(a, "role"))));
+                m.shape = static_cast<PrintModifier::Shape>(static_cast<int>(num(need(a, "shape"))));
+                const auto c3 = split(need(a, "c"), ','), s3 = split(need(a, "s"), ',');
+                if (c3.size() != 3 || s3.size() != 3) throw std::invalid_argument("Modifikator unvollständig");
+                m.cx = num(c3[0]); m.cy = num(c3[1]); m.cz = num(c3[2]);
+                m.sx = num(s3[0]); m.sy = num(s3[1]); m.sz = num(s3[2]);
+                if (a.count("infill")) m.infillDensity = num(a.at("infill"));
+                if (a.count("pattern")) m.infillPattern = static_cast<int>(num(a.at("pattern")));
+                modifiers.push_back(m);
             } else if (key == "extrude" || key == "revolve") {
                 const auto a = attrs(parts);
                 auto it = sketchesByName.find(need(a, "sketch"));
@@ -249,6 +278,7 @@ bool PartDocument::fromText(const std::string& text, std::string* error)
     }
     clear(name);
     m_features = std::move(features);
+    m_modifiers = std::move(modifiers);
     return true;
 }
 

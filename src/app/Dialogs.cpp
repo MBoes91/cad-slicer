@@ -597,3 +597,82 @@ fw::HeightEvent HeightEventDialog::event() const
     e.gcode = m_text->toPlainText().toStdString();
     return e;
 }
+
+// ---------------------------------------------------------------------------
+ModifierDialog::ModifierDialog(const fw::PrintModifier& m, QWidget* parent) : QDialog(parent), m_base(m)
+{
+    setWindowTitle(QString::fromUtf8("Druck-Modifikator: %1").arg(QString::fromStdString(m.name)));
+    m_role = new QComboBox;
+    for (auto r : {fw::PrintModifier::Role::InfillZone, fw::PrintModifier::Role::SupportEnforcer, fw::PrintModifier::Role::SupportBlocker})
+        m_role->addItem(QString::fromUtf8(fw::modifierRoleName(r)));
+    m_role->setCurrentIndex(static_cast<int>(m.role));
+    m_shape = new QComboBox;
+    m_shape->addItems({"Quader", "Zylinder"});
+    m_shape->setCurrentIndex(static_cast<int>(m.shape));
+    m_cx = mmBox(-1000, 1000, m.cx);
+    m_cy = mmBox(-1000, 1000, m.cy);
+    m_cz = mmBox(-1000, 1000, m.cz);
+    m_sx = mmBox(0.1, 1000, m.sx);
+    m_sy = mmBox(0.1, 1000, m.sy);
+    m_sz = mmBox(0.1, 1000, m.sz);
+    m_density = mmBox(0, 100, m.infillDensity * 100, " %", 0);
+    m_pattern = new QComboBox;
+    m_pattern->addItems({"Linien", "Gitter"});
+    m_pattern->setCurrentIndex(m.infillPattern);
+
+    auto* form = new QFormLayout;
+    form->addRow("Art:", m_role);
+    form->addRow("Form:", m_shape);
+    auto* pos = new QHBoxLayout;
+    pos->addWidget(m_cx); pos->addWidget(m_cy); pos->addWidget(m_cz);
+    form->addRow("Mitte X / Y / Z:", pos);
+    auto* size = new QHBoxLayout;
+    size->addWidget(m_sx); size->addWidget(m_sy); size->addWidget(m_sz);
+    auto* sizeLabel = new QLabel;
+    form->addRow(sizeLabel, size);
+    form->addRow("Fülldichte:", m_density);
+    form->addRow("Füllmuster:", m_pattern);
+    auto* hint = new QLabel;
+    hint->setWordWrap(true);
+    hint->setStyleSheet("color: #5a6270;");
+    form->addRow(hint);
+
+    auto update = [=] {
+        const bool zone = m_role->currentIndex() == static_cast<int>(fw::PrintModifier::Role::InfillZone);
+        const bool cyl = m_shape->currentIndex() == 1;
+        form->setRowVisible(m_density, zone);
+        form->setRowVisible(m_pattern, zone);
+        m_sy->setVisible(!cyl);
+        sizeLabel->setText(cyl ? QString::fromUtf8("Durchmesser / Höhe:") : QString::fromUtf8("Größe X / Y / Z:"));
+        switch (static_cast<fw::PrintModifier::Role>(m_role->currentIndex())) {
+        case fw::PrintModifier::Role::InfillZone:
+            hint->setText(QString::fromUtf8("Innerhalb des Bereichs wird mit eigener Dichte gefüllt, z. B. 80 % rund um Schraubenlöcher."));
+            break;
+        case fw::PrintModifier::Role::SupportEnforcer:
+            hint->setText(QString::fromUtf8("Unter allen nach unten zeigenden Flächen im Bereich entstehen Stützen, auch wenn Stützen sonst aus sind."));
+            break;
+        case fw::PrintModifier::Role::SupportBlocker:
+            hint->setText(QString::fromUtf8("Im Bereich werden keine Stützen erzeugt."));
+            break;
+        }
+    };
+    connect(m_role, &QComboBox::currentIndexChanged, this, update);
+    connect(m_shape, &QComboBox::currentIndexChanged, this, update);
+    update();
+
+    auto* lay = new QVBoxLayout(this);
+    lay->addLayout(form);
+    lay->addWidget(okCancel(this));
+}
+
+fw::PrintModifier ModifierDialog::modifier() const
+{
+    fw::PrintModifier m = m_base;
+    m.role = static_cast<fw::PrintModifier::Role>(m_role->currentIndex());
+    m.shape = static_cast<fw::PrintModifier::Shape>(m_shape->currentIndex());
+    m.cx = m_cx->value(); m.cy = m_cy->value(); m.cz = m_cz->value();
+    m.sx = m_sx->value(); m.sy = m.shape == fw::PrintModifier::Shape::Cylinder ? m_sx->value() : m_sy->value(); m.sz = m_sz->value();
+    m.infillDensity = m_density->value() / 100.0;
+    m.infillPattern = m_pattern->currentIndex();
+    return m;
+}

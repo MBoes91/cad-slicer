@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/Features.h"
+#include "core/PrintModifier.h"
 
 #include <string>
 #include <vector>
@@ -15,6 +16,9 @@ public:
 
     const std::string& name() const { return m_name; }
     const std::vector<FeaturePtr>& features() const { return m_features; }
+
+    std::vector<PrintModifier>& modifiers() { return m_modifiers; }
+    const std::vector<PrintModifier>& modifiers() const { return m_modifiers; }
 
     void addFeature(FeaturePtr f);
     // Entfernt ein Feature. Skizzen, die noch von Features benutzt werden,
@@ -44,6 +48,7 @@ public:
 private:
     std::string m_name;
     std::vector<FeaturePtr> m_features;
+    std::vector<PrintModifier> m_modifiers;
     TopoDS_Shape m_body;
     FeaturePtr m_errorFeature;
     std::string m_errorMessage;
