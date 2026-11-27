@@ -684,11 +684,16 @@ void SketchCanvas::mousePressEvent(QMouseEvent* e)
         return;
     }
     if (e->button() == Qt::RightButton) {
-        if (!m_pending.empty() || !m_picked.empty()) cancelOperation();
-        else setTool(Tool::Select);
-        m_message.clear();
-        updateStatus();
-        update();
+        // Laufende Eingabe (z. B. Linienzug) beendet der Rechtsklick wie "OK",
+        // sonst erscheint das Markierungsmenue
+        if (!m_pending.empty() || !m_picked.empty()) {
+            cancelOperation();
+            m_message.clear();
+            updateStatus();
+            update();
+        } else {
+            emit contextMenuAt(e->globalPosition().toPoint());
+        }
         return;
     }
     if (e->button() != Qt::LeftButton) return;

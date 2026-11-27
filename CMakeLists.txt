@@ -54,7 +54,8 @@ if(FORMWERK_BUILD_APP)
     src/app/Dialogs.cpp
     src/app/ToolpathPreview.cpp
     src/app/SketchCanvas.cpp
-    src/app/PropertyPanel.cpp)
+    src/app/PropertyPanel.cpp
+    src/app/MarkingMenu.cpp)
   target_link_libraries(formwerk PRIVATE formwerk_slicer Qt6::Widgets Qt6::Concurrent TKService TKV3d TKOpenGl)
 endif()
 

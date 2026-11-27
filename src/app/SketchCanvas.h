@@ -37,6 +37,7 @@ public:
 signals:
     void statusChanged(const QString& text);
     void toolChanged();
+    void contextMenuAt(const QPoint& globalPos);
 
 protected:
     void paintEvent(QPaintEvent*) override;

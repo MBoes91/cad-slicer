@@ -3,6 +3,7 @@
 #include "app/Dialogs.h"
 #include "app/OcctView.h"
 #include "app/PropertyPanel.h"
+#include "app/MarkingMenu.h"
 #include "app/SketchCanvas.h"
 #include "app/ToolpathPreview.h"
 #include "slicer/Settings.h"
@@ -355,6 +356,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
         else statusBar()->showMessage(t);
     });
     connect(m_view, &OcctView::contextMenuAt, this, [this](const QPoint& pos) { showViewContextMenu(pos); });
+    connect(m_canvas, &SketchCanvas::contextMenuAt, this, [this](const QPoint& pos) { showSketchContextMenu(pos); });
 
     // Grafikbereich: 3D-Fenster mit Navigationsleiste rechts
     m_modelPage = new QWidget;
@@ -609,19 +611,54 @@ void MainWindow::applyBodyStyle()
 
 void MainWindow::showViewContextMenu(const QPoint& pos)
 {
-    QMenu menu;
-    menu.addAction(makeIcon(Icon::Sketch), "Neue Skizze", this, [this] { cmdNewSketch(); })->setEnabled(!m_printPreview);
-    menu.addAction(makeIcon(Icon::Extrude), "Extrusion …", this, [this] { cmdExtrude(); })->setEnabled(!m_printPreview);
-    menu.addAction(makeIcon(Icon::Revolve), "Drehung …", this, [this] { cmdRevolve(); })->setEnabled(!m_printPreview);
-    menu.addSeparator();
-    menu.addAction(makeIcon(Icon::Fit), "Alles zoomen", this, [this] { m_view->fitAll(); });
-    menu.addAction(makeIcon(Icon::PrevView), "Vorherige Ansicht", this, [this] { m_view->previousView(); })
-        ->setEnabled(m_view->hasPreviousView());
-    menu.addAction(makeIcon(Icon::Home), "Ausgangsansicht", this, [this] { m_view->homeView(); });
-    menu.addSeparator();
-    if (m_inPrintEnv) menu.addAction(makeIcon(Icon::Close), "3D-Druck beenden", this, [this] { exitPrintEnvironment(); });
-    else menu.addAction(makeIcon(Icon::PrintEnv), "3D-Druck", this, [this] { enterPrintEnvironment(); });
-    menu.exec(pos);
+    if (m_pickingPlane || m_editFeature) return;
+    auto* mm = new MarkingMenu(this);
+    if (m_lastCommand) {
+        auto* again = new QAction(m_lastCommand->icon(),
+            QString::fromUtf8("Wiederholen: %1").arg(QString(m_lastCommand->text()).replace("-\n", "").replace('\n', ' ')), mm);
+        QAction* last = m_lastCommand;
+        again->setEnabled(last->isEnabled());
+        connect(again, &QAction::triggered, last, &QAction::trigger);
+        mm->setItem(MarkingMenu::N, again);
+    }
+    mm->setItem(MarkingMenu::NE, m_actSketch);
+    mm->setItem(MarkingMenu::E, m_actExtrude);
+    mm->setItem(MarkingMenu::SE, m_actRevolve);
+    mm->setItem(MarkingMenu::S, m_actHome);
+    mm->setItem(MarkingMenu::SW, m_actPrev);
+    mm->setItem(MarkingMenu::W, m_actFit);
+    mm->setItem(MarkingMenu::NW, m_inPrintEnv ? m_actExitPrint : m_actPrintEnv);
+    mm->addOverflow(m_actMeasure);
+    mm->addOverflow(m_actUpdate);
+    mm->addOverflowSeparator();
+    mm->addOverflow(m_styleShaded);
+    mm->addOverflow(m_styleEdges);
+    mm->addOverflow(m_styleWire);
+    if (m_inPrintEnv) {
+        mm->addOverflowSeparator();
+        mm->addOverflow(m_actSlice);
+        mm->addOverflow(m_actSaveGcode);
+    }
+    mm->popup(pos);
+}
+
+void MainWindow::showSketchContextMenu(const QPoint& pos)
+{
+    auto* mm = new MarkingMenu(this);
+    auto& t = m_sketchToolActions; // 0 Auswaehlen, 1 Linie, 2 Rechteck, 3 Kreis, 4 Bogen, 5 Bemassung
+    mm->setItem(MarkingMenu::N, t[1]);
+    mm->setItem(MarkingMenu::NE, t[2]);
+    mm->setItem(MarkingMenu::E, m_sketchFinish);
+    mm->setItem(MarkingMenu::SE, t[5]);
+    mm->setItem(MarkingMenu::S, m_sketchFit);
+    mm->setItem(MarkingMenu::SW, t[4]);
+    mm->setItem(MarkingMenu::W, t[3]);
+    mm->setItem(MarkingMenu::NW, t[0]);
+    mm->addOverflow(m_sketchConstr);
+    mm->addOverflow(m_sketchDelete);
+    mm->addOverflowSeparator();
+    mm->addOverflow(m_sketchCancel);
+    mm->popup(pos);
 }
 
 void MainWindow::cmdMeasure()
@@ -676,6 +713,8 @@ void MainWindow::buildRibbon()
                               "Bis dahin: Kreis in eine Skizze zeichnen und mit \"Differenz\" extrudieren."));
     });
     auto* aPrintEnv = act("3D-Druck", Icon::PrintEnv, {}, [this] { enterPrintEnvironment(); });
+    for (QAction* a : {aSketch, aExtrude, aRevolve, aHole})
+        connect(a, &QAction::triggered, this, [this, a] { m_lastCommand = a; });
     aPrintEnv->setToolTip(QString::fromUtf8("3D-Druck-Umgebung: Druckeinstellungen, Modifikatoren, Slicen, G-Code"));
 
     // --- Prüfen / Verwalten
@@ -706,6 +745,8 @@ void MainWindow::buildRibbon()
     connect(aPersp, &QAction::toggled, this, [this](bool on) { m_view->setPerspective(on); });
 
     for (QAction* a : {aPan, aZoom, aOrbit, aFit, aPrev, aHome}) m_navBar->addAction(a);
+    m_actSketch = aSketch; m_actExtrude = aExtrude; m_actRevolve = aRevolve; m_actHome = aHome;
+    m_actPrev = aPrev; m_actFit = aFit; m_actPrintEnv = aPrintEnv; m_actMeasure = aMeasure; m_actUpdate = aUpdate;
 
     // --- 3D-Druck (kontextuelles Register der Umgebung)
     auto* aSlice = act("Slicen", Icon::Slice, QKeySequence("Ctrl+R"), [this] { cmdSlice(); });
@@ -714,6 +755,7 @@ void MainWindow::buildRibbon()
     auto* aSave = act("G-Code\nspeichern", Icon::Save, QKeySequence("Ctrl+G"), [this] { cmdSaveGcode(); });
     auto* aSettings = act("Druckein-\nstellungen", Icon::Settings, {}, [this] { cmdPrintSettings(); });
     auto* aExitPrint = act("3D-Druck\nbeenden", Icon::Close, {}, [this] { exitPrintEnvironment(); });
+    m_actExitPrint = aExitPrint; m_actSlice = aSlice; m_actSaveGcode = aSave;
 
     auto* aEvent = act("Ereignis", Icon::Pause, {}, [this] { cmdAddEventAtLayer(); });
     aEvent->setToolTip(QString::fromUtf8("Pause, Filamentwechsel, Temperatur o. Ä. ab der angezeigten Schicht einfügen"));
@@ -768,6 +810,13 @@ void MainWindow::buildRibbon()
     connect(sFinish, &QAction::triggered, this, [this] { finishSketch(true); });
     auto* sCancel = new QAction(makeIcon(Icon::Cancel), "Abbrechen", this);
     connect(sCancel, &QAction::triggered, this, [this] { finishSketch(false); });
+    m_sketchFinish = sFinish;
+    m_sketchCancel = sCancel;
+    m_sketchConstr = sConstr;
+    m_sketchFit = new QAction(makeIcon(Icon::Fit), "Alles zoomen", this);
+    connect(m_sketchFit, &QAction::triggered, this, [this] { m_canvas->fit(); });
+    m_sketchDelete = new QAction(makeIcon(Icon::Cancel), QString::fromUtf8("Löschen"), this);
+    connect(m_sketchDelete, &QAction::triggered, this, [this] { m_canvas->deleteSelection(); });
     connect(m_canvas, &SketchCanvas::toolChanged, this, [this] {
         for (QAction* a : m_sketchToolActions)
             a->setChecked(a->data().toInt() == static_cast<int>(m_canvas->tool()));

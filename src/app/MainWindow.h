@@ -59,6 +59,7 @@ private:
     void setVisualStyle(int style);
     void applyBodyStyle();
     void showViewContextMenu(const QPoint& globalPos);
+    void showSketchContextMenu(const QPoint& globalPos);
     void cmdMeasure();
     void cmdCloseDoc();
     void displayModel();
@@ -170,6 +171,13 @@ private:
     QAction* m_styleShaded = nullptr;
     QAction* m_styleEdges = nullptr;
     QAction* m_styleWire = nullptr;
+    // fuer die Markierungsmenues
+    QAction* m_lastCommand = nullptr;
+    QAction *m_actSketch = nullptr, *m_actExtrude = nullptr, *m_actRevolve = nullptr, *m_actHome = nullptr;
+    QAction *m_actPrev = nullptr, *m_actFit = nullptr, *m_actPrintEnv = nullptr, *m_actExitPrint = nullptr;
+    QAction *m_actMeasure = nullptr, *m_actUpdate = nullptr, *m_actSlice = nullptr, *m_actSaveGcode = nullptr;
+    QAction *m_sketchFinish = nullptr, *m_sketchCancel = nullptr, *m_sketchConstr = nullptr;
+    QAction *m_sketchFit = nullptr, *m_sketchDelete = nullptr;
     QTabWidget* m_ribbon = nullptr;
     QTreeWidget* m_browser = nullptr;
     QSlider* m_layerSlider = nullptr;
