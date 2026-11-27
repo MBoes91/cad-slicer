@@ -58,6 +58,9 @@ public:
     // Wertet einen Ausdruck mit den aktuellen Parameterwerten aus
     bool evaluateExpression(const std::string& expr, double& out, std::string* error = nullptr) const;
     void assignParameterNames();
+    // Naechste freie Nummer fuer "d<N>" und Wert eines Parameters
+    int nextParameterIndex() const;
+    bool parameterValue(const std::string& name, double& value) const;
 
     // Berechnet den Koerper neu. Gibt false zurueck, wenn ein Feature
     // fehlschlaegt; errorFeature/errorMessage nennen dann die Ursache.

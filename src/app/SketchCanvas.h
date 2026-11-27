@@ -5,6 +5,7 @@
 #include <QPolygonF>
 #include <QWidget>
 
+#include <array>
 #include <functional>
 #include <optional>
 #include <vector>
@@ -26,9 +27,9 @@ public:
     struct RefLine { QPolygonF pts; bool inPlane = false; };
     void setReference(std::vector<RefLine> lines) { m_reference = std::move(lines); }
 
-    // Wertet Gleichungen in Bemassungen aus (Parameter des Bauteils)
-    using Evaluator = std::function<bool(const QString& text, double& value, QString& error)>;
-    void setEvaluator(Evaluator e) { m_eval = std::move(e); }
+    // Parameter des Bauteils fuer Gleichungen; neue Bemassungen heissen d<nextIndex>, d<nextIndex+1> ...
+    using Lookup = std::function<bool(const std::string& name, double& value)>;
+    void setParameters(Lookup docLookup, int nextIndex) { m_docLookup = std::move(docLookup); m_nextParam = nextIndex; }
 
     void begin(const fw::Sketch& sketch);
     const fw::SketchGeometry& geometry() const { return m_geo; }
@@ -53,11 +54,15 @@ protected:
     void wheelEvent(QWheelEvent*) override;
     void keyPressEvent(QKeyEvent*) override;
     void resizeEvent(QResizeEvent*) override;
+    bool event(QEvent* e) override;
 
 private:
     // Fragt Wert oder Gleichung ab; false bei Abbruch
     bool askValue(const QString& title, const QString& label, const QString& initial, double& value, std::string& expr);
-    Evaluator m_eval;
+    bool evaluate(const QString& text, double& value, QString& error) const;
+    void nameDimension(fw::SkConstraint& c);
+    Lookup m_docLookup;
+    int m_nextParam = 0;
     std::vector<RefLine> m_reference;
     struct Hit {
         enum Kind { None, Point, Entity, Constraint } kind = None;
@@ -81,6 +86,26 @@ private:
     QString dimensionText(const fw::SkConstraint& c) const;
     void editDimension(int index);
     void updateStatus();
+
+    // Zeichnen (Maus und dynamische Eingabe teilen sich diese Schritte)
+    int lineTo(int p, bool closeChain);     // liefert neue Linie oder -1
+    std::array<int, 4> rectTo(int p);       // liefert die vier Linien oder -1
+    int circleTo(double r);                 // liefert den Kreis oder -1
+
+    // Dynamische Eingabe: Wertefelder am Mauszeiger
+    struct DynField {
+        QString label;
+        QString text;        // getippter Text (leer = Wert folgt der Maus)
+        double live = 0;     // aktueller Wert aus der Mausposition
+    };
+    void updateDynFields();
+    bool dynValue(int i, double& v, std::string* expr = nullptr) const;
+    QPointF dynTarget() const;              // Skizzenpunkt aus Maus + getippten Werten
+    void commitDynamic();
+    bool dynKey(QKeyEvent* e);
+    std::vector<DynField> m_dyn;
+    int m_dynActive = 0;
+    bool m_dynEngaged = false; // Eingabe laeuft: Buchstaben gehen in die Felder (Parameternamen)
 
     fw::SketchGeometry m_geo;
     Tool m_tool = Tool::Select;

@@ -94,6 +94,8 @@ void SketchCanvas::setTool(Tool t)
     cancelOperation();
     m_tool = t;
     m_selected = {};
+    m_dyn.clear();
+    updateDynFields();
     updateStatus();
     emit toolChanged();
     update();
@@ -105,6 +107,8 @@ void SketchCanvas::cancelOperation()
     m_picked.clear();
     m_dragPoint = -1;
     m_dragLabel = -1;
+    m_dyn.clear();
+    updateDynFields();
 }
 
 // --- Koordinaten ------------------------------------------------------------------
@@ -243,8 +247,39 @@ void SketchCanvas::addAutoHV(int line)
     if (m_geo.canAdd(c)) m_geo.addConstraint(c);
 }
 
+bool SketchCanvas::evaluate(const QString& text, double& value, QString& error) const
+{
+    // Bemassungen dieser Skizze zuerst (aktuelle Werte), dann Parameter des Bauteils
+    const fw::ParamLookup lookup = [this](const std::string& n, double& v) {
+        for (const auto& c : m_geo.constraints)
+            if (c.driving && c.ref.param == n) { v = std::abs(c.value); return true; }
+        return m_docLookup && m_docLookup(n, v);
+    };
+    try {
+        value = fw::evaluate(text.toStdString(), lookup);
+        return true;
+    } catch (const std::exception& e) {
+        error = QString::fromUtf8(e.what());
+        return false;
+    }
+}
+
+void SketchCanvas::nameDimension(SkConstraint& c)
+{
+    if (!isDimension(c.type) || !c.ref.param.empty()) return;
+    // Naechste Nummer, die weder im Bauteil noch in dieser Skizze vergeben ist
+    int next = m_nextParam;
+    for (const auto& o : m_geo.constraints) {
+        const auto& n = o.ref.param;
+        if (n.size() > 1 && n[0] == 'd' && n.find_first_not_of("0123456789", 1) == std::string::npos)
+            next = std::max(next, std::stoi(n.substr(1)) + 1);
+    }
+    c.ref.param = "d" + std::to_string(next);
+}
+
 bool SketchCanvas::tryAdd(SkConstraint c, bool allowDriven)
 {
+    nameDimension(c);
     if (m_geo.canAdd(c)) {
         m_geo.addConstraint(c);
         resolve();
@@ -451,7 +486,7 @@ bool SketchCanvas::askValue(const QString& title, const QString& label, const QS
             return true;
         }
         QString err;
-        if (m_eval && m_eval(text.trimmed(), value, err)) {
+        if (evaluate(text.trimmed(), value, err)) {
             value = std::abs(value);
             expr = st;
             return true;
@@ -655,23 +690,24 @@ void SketchCanvas::paintEvent(QPaintEvent*)
         p.drawText(r, Qt::AlignCenter, dimensionText(c));
     }
 
-    // Vorschau des laufenden Werkzeugs
+    // Vorschau des laufenden Werkzeugs (getippte Werte der dynamischen Eingabe gelten)
     p.setPen(QPen(kHoverColor, 1.5, Qt::DashLine));
     p.setBrush(Qt::NoBrush);
+    const QPointF target = m_dyn.empty() ? m_mouse : toScreen(dynTarget().x(), dynTarget().y());
     if (!m_pending.empty()) {
         const auto& a = P[m_pending.front()];
         const QPointF as = toScreen(a.x, a.y);
         switch (m_tool) {
         case Tool::Line: {
             const auto& last = P[m_pending.back()];
-            p.drawLine(toScreen(last.x, last.y), m_mouse);
+            p.drawLine(toScreen(last.x, last.y), target);
             break;
         }
         case Tool::Rectangle:
-            p.drawRect(QRectF(as, m_mouse).normalized());
+            p.drawRect(QRectF(as, target).normalized());
             break;
         case Tool::Circle: {
-            const double r = std::hypot(m_mouse.x() - as.x(), m_mouse.y() - as.y());
+            const double r = std::hypot(target.x() - as.x(), target.y() - as.y());
             p.drawEllipse(as, r, r);
             break;
         }
@@ -699,6 +735,42 @@ void SketchCanvas::paintEvent(QPaintEvent*)
     p.setPen(QColor(90, 100, 115));
     p.drawText(QRectF(8, height() - 24, 300, 20), Qt::AlignLeft | Qt::AlignVCenter,
                QString("X %1  Y %2 mm").arg(m.x(), 0, 'f', 2).arg(m.y(), 0, 'f', 2));
+
+    // Dynamische Eingabe: Felder neben dem Mauszeiger
+    if (!m_dyn.empty() && underMouse()) {
+        QFont f = font();
+        f.setPointSizeF(f.pointSizeF() * 0.95);
+        p.setFont(f);
+        const QFontMetrics fm(f);
+        QPointF at = m_mouse + QPointF(18, 18);
+        for (size_t i = 0; i < m_dyn.size(); ++i) {
+            const auto& d = m_dyn[i];
+            const bool active = static_cast<int>(i) == m_dynActive;
+            const bool typed = !d.text.isEmpty();
+            const bool angle = d.label == "Winkel";
+            const QString value = typed ? d.text + (active ? "|" : "")
+                                        : ValueEdit::format(d.live) + (angle ? QString::fromUtf8("°") : QString());
+            const QString label = d.label + ":";
+            const double lw = fm.horizontalAdvance(label) + 6, vw = std::max(60, fm.horizontalAdvance(value) + 12);
+            const QRectF box(at, QSizeF(lw + vw, fm.height() + 6));
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor(255, 255, 255, 235));
+            p.drawRoundedRect(box, 3, 3);
+            p.setPen(QColor(90, 100, 115));
+            p.drawText(QRectF(box.left() + 4, box.top(), lw, box.height()), Qt::AlignVCenter, label);
+            const QRectF vr(box.left() + lw, box.top() + 2, vw - 2, box.height() - 4);
+            p.setPen(QPen(active ? QColor(47, 111, 191) : QColor(185, 192, 202), active ? 1.5 : 1));
+            p.setBrush(typed ? QColor(232, 242, 255) : Qt::white);
+            p.drawRect(vr);
+            QFont vf = f;
+            vf.setBold(typed);
+            p.setFont(vf);
+            p.setPen(QColor(30, 40, 55));
+            p.drawText(vr.adjusted(4, 0, -2, 0), Qt::AlignVCenter | Qt::AlignLeft, value);
+            p.setFont(f);
+            at.ry() += box.height() + 3;
+        }
+    }
 }
 
 // --- Maus ------------------------------------------------------------------------------------
@@ -737,40 +809,27 @@ void SketchCanvas::mousePressEvent(QMouseEvent* e)
         if (h.kind == Hit::Constraint) m_dragLabel = h.index;
         break;
     case Tool::Line: {
+        if (!m_dyn.empty() && std::any_of(m_dyn.begin(), m_dyn.end(), [](const DynField& f) { return !f.text.isEmpty(); })) {
+            commitDynamic(); // getippte Werte gelten auch beim Klick
+            break;
+        }
         const bool existing = pointAt(pos) >= 0;
-        const int p = pickOrCreatePoint(pos);
-        if (m_pending.empty()) { m_pending.push_back(p); break; }
-        if (p == m_pending.back()) break;
-        const int line = m_geo.addLine(m_pending.back(), p);
-        addAutoHV(line);
-        resolve();
-        if (existing) m_pending.clear(); // an vorhandenen Punkt angeschlossen: Linienzug beenden
-        else m_pending = {p};
+        lineTo(pickOrCreatePoint(pos), existing);
         break;
     }
-    case Tool::Rectangle: {
-        const int p = pickOrCreatePoint(pos);
-        if (m_pending.empty()) { m_pending.push_back(p); break; }
-        const auto a = m_geo.points[m_pending[0]];
-        const auto c = m_geo.points[p];
-        if (std::abs(a.x - c.x) < 1e-6 || std::abs(a.y - c.y) < 1e-6) break;
-        const int p1 = m_geo.addPoint(c.x, a.y), p3 = m_geo.addPoint(a.x, c.y);
-        const int l0 = m_geo.addLine(m_pending[0], p1), l1 = m_geo.addLine(p1, p);
-        const int l2 = m_geo.addLine(p, p3), l3 = m_geo.addLine(p3, m_pending[0]);
-        for (auto [l, t] : {std::pair{l0, ConType::Horizontal}, {l2, ConType::Horizontal}, {l1, ConType::Vertical}, {l3, ConType::Vertical}})
-            if (m_geo.canAdd({t, l})) m_geo.addConstraint({t, l});
-        m_pending.clear();
-        resolve();
+    case Tool::Rectangle:
+        if (!m_dyn.empty() && std::any_of(m_dyn.begin(), m_dyn.end(), [](const DynField& f) { return !f.text.isEmpty(); })) {
+            commitDynamic();
+            break;
+        }
+        rectTo(pickOrCreatePoint(pos));
         break;
-    }
     case Tool::Circle: {
         if (m_pending.empty()) { m_pending.push_back(pickOrCreatePoint(pos)); break; }
+        if (!m_dyn.empty() && !m_dyn[0].text.isEmpty()) { commitDynamic(); break; }
         const auto& c = m_geo.points[m_pending[0]];
         const QPointF s = toSketch(pos);
-        const double r = std::hypot(s.x() - c.x, s.y() - c.y);
-        if (r > 1e-6) m_geo.addCircle(m_pending[0], r);
-        m_pending.clear();
-        resolve();
+        circleTo(std::hypot(s.x() - c.x, s.y() - c.y));
         break;
     }
     case Tool::Arc: {
@@ -796,8 +855,240 @@ void SketchCanvas::mousePressEvent(QMouseEvent* e)
         handleConstraintTool(h);
         break;
     }
+    updateDynFields();
     updateStatus();
     update();
+}
+
+// --- Zeichenschritte ---------------------------------------------------------------------------
+
+int SketchCanvas::lineTo(int p, bool closeChain)
+{
+    if (m_pending.empty()) { m_pending.push_back(p); return -1; }
+    if (p == m_pending.back()) return -1;
+    const int line = m_geo.addLine(m_pending.back(), p);
+    addAutoHV(line);
+    resolve();
+    if (closeChain) m_pending.clear(); // an vorhandenen Punkt angeschlossen: Linienzug beenden
+    else m_pending = {p};
+    return line;
+}
+
+std::array<int, 4> SketchCanvas::rectTo(int p)
+{
+    if (m_pending.empty()) { m_pending.push_back(p); return {-1, -1, -1, -1}; }
+    const auto a = m_geo.points[m_pending[0]];
+    const auto c = m_geo.points[p];
+    if (std::abs(a.x - c.x) < 1e-6 || std::abs(a.y - c.y) < 1e-6) return {-1, -1, -1, -1};
+    const int p1 = m_geo.addPoint(c.x, a.y), p3 = m_geo.addPoint(a.x, c.y);
+    const int l0 = m_geo.addLine(m_pending[0], p1), l1 = m_geo.addLine(p1, p);
+    const int l2 = m_geo.addLine(p, p3), l3 = m_geo.addLine(p3, m_pending[0]);
+    for (auto [l, t] : {std::pair{l0, ConType::Horizontal}, {l2, ConType::Horizontal}, {l1, ConType::Vertical}, {l3, ConType::Vertical}})
+        if (m_geo.canAdd({t, l})) m_geo.addConstraint({t, l});
+    m_pending.clear();
+    resolve();
+    return {l0, l1, l2, l3};
+}
+
+int SketchCanvas::circleTo(double r)
+{
+    if (m_pending.empty() || r <= 1e-6) return -1;
+    const int c = m_geo.addCircle(m_pending[0], r);
+    m_pending.clear();
+    resolve();
+    return c;
+}
+
+// --- Dynamische Eingabe ------------------------------------------------------------------------
+
+void SketchCanvas::updateDynFields()
+{
+    std::vector<QString> labels;
+    const bool drawing = m_tool == Tool::Line || m_tool == Tool::Rectangle || m_tool == Tool::Circle;
+    if (drawing && m_pending.empty()) labels = {"X", "Y"};
+    else if (m_tool == Tool::Line) labels = {QString::fromUtf8("Länge"), "Winkel"};
+    else if (m_tool == Tool::Rectangle) labels = {"Breite", QString::fromUtf8("Höhe")};
+    else if (m_tool == Tool::Circle) labels = {"Durchmesser"};
+
+    bool same = labels.size() == m_dyn.size();
+    for (size_t i = 0; same && i < labels.size(); ++i) same = labels[i] == m_dyn[i].label;
+    if (!same) {
+        m_dynEngaged = false;
+        m_dyn.clear();
+        for (const auto& l : labels) m_dyn.push_back({l, {}, 0});
+        m_dynActive = 0;
+    }
+    if (m_dyn.empty()) return;
+
+    const QPointF m = toSketch(m_mouse);
+    const auto& P = m_geo.points;
+    if (m_pending.empty()) {
+        m_dyn[0].live = m.x();
+        m_dyn[1].live = m.y();
+    } else if (m_tool == Tool::Line) {
+        const auto& a = P[m_pending.back()];
+        m_dyn[0].live = std::hypot(m.x() - a.x, m.y() - a.y);
+        m_dyn[1].live = std::atan2(m.y() - a.y, m.x() - a.x) * 180.0 / M_PI;
+    } else if (m_tool == Tool::Rectangle) {
+        const auto& a = P[m_pending.front()];
+        m_dyn[0].live = std::abs(m.x() - a.x);
+        m_dyn[1].live = std::abs(m.y() - a.y);
+    } else if (m_tool == Tool::Circle) {
+        const auto& a = P[m_pending.front()];
+        m_dyn[0].live = 2.0 * std::hypot(m.x() - a.x, m.y() - a.y);
+    }
+}
+
+bool SketchCanvas::dynValue(int i, double& v, std::string* expr) const
+{
+    const auto& f = m_dyn[static_cast<size_t>(i)];
+    if (f.text.isEmpty()) { v = f.live; return false; }
+    const std::string st = f.text.trimmed().toStdString();
+    try {
+        if (fw::isPlainNumber(st)) {
+            v = fw::evaluate(st, {});
+            if (expr) expr->clear();
+            return true;
+        }
+    } catch (...) {
+        v = f.live;
+        return false;
+    }
+    QString err;
+    if (evaluate(f.text.trimmed(), v, err)) {
+        if (expr) *expr = st;
+        return true;
+    }
+    v = f.live;
+    return false;
+}
+
+QPointF SketchCanvas::dynTarget() const
+{
+    const QPointF m = toSketch(m_mouse);
+    if (m_dyn.empty()) return m;
+    const auto& P = m_geo.points;
+    double v0 = 0, v1 = 0;
+    dynValue(0, v0);
+    if (m_dyn.size() > 1) dynValue(1, v1);
+    if (m_pending.empty()) return {v0, v1};
+    if (m_tool == Tool::Line) {
+        const auto& a = P[m_pending.back()];
+        const double ang = v1 * M_PI / 180.0;
+        return {a.x + v0 * std::cos(ang), a.y + v0 * std::sin(ang)};
+    }
+    if (m_tool == Tool::Rectangle) {
+        const auto& a = P[m_pending.front()];
+        const double sx = m.x() >= a.x ? 1.0 : -1.0, sy = m.y() >= a.y ? 1.0 : -1.0;
+        return {a.x + sx * v0, a.y + sy * v1};
+    }
+    if (m_tool == Tool::Circle) {
+        const auto& a = P[m_pending.front()];
+        const double ang = std::atan2(m.y() - a.y, m.x() - a.x);
+        return {a.x + v0 / 2.0 * std::cos(ang), a.y + v0 / 2.0 * std::sin(ang)};
+    }
+    return m;
+}
+
+void SketchCanvas::commitDynamic()
+{
+    if (m_dyn.empty()) return;
+    std::string e0;
+    double v0 = 0;
+    const bool t0 = dynValue(0, v0, &e0);
+    const QPointF target = dynTarget();
+    auto newPoint = [this](const QPointF& q) {
+        // Vorhandenen Punkt an genau dieser Stelle wiederverwenden
+        for (size_t i = 0; i < m_geo.points.size(); ++i)
+            if (std::hypot(m_geo.points[i].x - q.x(), m_geo.points[i].y - q.y()) < 1e-9) return static_cast<int>(i);
+        return m_geo.addPoint(q.x(), q.y());
+    };
+    auto addDim = [this](SkConstraint c, double value, const std::string& expr) {
+        c.value = value;
+        c.ref.expr = expr;
+        // Masszahl etwas neben die Kante legen
+        c.labelX = c.type == ConType::DistanceY ? -18.0 / m_scale : 0.0;
+        c.labelY = c.type == ConType::DistanceX ? -18.0 / m_scale : 0.0;
+        nameDimension(c);
+        if (m_geo.canAdd(c)) m_geo.addConstraint(c);
+        resolve();
+    };
+
+    if (m_pending.empty()) {
+        const int p = newPoint(target);
+        m_pending.push_back(p);
+    } else if (m_tool == Tool::Line) {
+        const int line = lineTo(newPoint(target), false);
+        if (line >= 0 && t0) {
+            const auto& l = m_geo.entities[static_cast<size_t>(line)];
+            addDim({ConType::Distance, l.p0, l.p1}, v0, e0);
+        }
+    } else if (m_tool == Tool::Rectangle) {
+        const auto& a = m_geo.points[m_pending.front()];
+        const double dx = target.x() - a.x, dy = target.y() - a.y;
+        const auto lines = rectTo(newPoint(target));
+        if (lines[0] >= 0) {
+            const auto& l0 = m_geo.entities[static_cast<size_t>(lines[0])];
+            const auto& l1 = m_geo.entities[static_cast<size_t>(lines[1])];
+            const int l1p0 = l1.p0, l1p1 = l1.p1;
+            if (t0) addDim({ConType::DistanceX, l0.p0, l0.p1}, dx, e0);
+            // Hoehe erst jetzt auswerten: darf sich auf die eben angelegte Breite beziehen ("d0 / 2")
+            double h = 0;
+            std::string eh;
+            if (m_dyn.size() > 1 && dynValue(1, h, &eh)) addDim({ConType::DistanceY, l1p0, l1p1}, dy < 0 ? -h : h, eh);
+        }
+    } else if (m_tool == Tool::Circle) {
+        const int c = circleTo(v0 / 2.0);
+        if (c >= 0 && t0) addDim({ConType::Diameter, c}, v0, e0);
+    }
+    resolve();
+    for (auto& f : m_dyn) f.text.clear();
+    m_dynActive = 0;
+    m_dynEngaged = false;
+    updateDynFields();
+    updateStatus();
+    update();
+}
+
+bool SketchCanvas::dynKey(QKeyEvent* e)
+{
+    if (m_dyn.empty()) return false;
+    auto& f = m_dyn[static_cast<size_t>(m_dynActive)];
+    const QString t = e->text();
+    const bool typing = !f.text.isEmpty() || m_dynEngaged;
+    if (e->key() == Qt::Key_Tab || e->key() == Qt::Key_Backtab) {
+        m_dynEngaged = true;
+        m_dynActive = (m_dynActive + (e->key() == Qt::Key_Tab ? 1 : static_cast<int>(m_dyn.size()) - 1)) % static_cast<int>(m_dyn.size());
+        update();
+        return true;
+    }
+    if (e->key() == Qt::Key_Return || e->key() == Qt::Key_Enter) {
+        commitDynamic();
+        return true;
+    }
+    if (e->key() == Qt::Key_Backspace && typing) {
+        f.text.chop(1);
+        update();
+        return true;
+    }
+    if (e->key() == Qt::Key_Escape && m_dynEngaged) {
+        for (auto& d : m_dyn) d.text.clear();
+        m_dynEngaged = false;
+        update();
+        return true;
+    }
+    if (t.size() == 1) {
+        const QChar c = t[0];
+        // Neue Eingabe beginnt mit Ziffer, Vorzeichen, Komma oder Klammer; danach ist alles erlaubt (Parameternamen)
+        const bool starts = c.isDigit() || c == '-' || c == '.' || c == ',' || c == '(';
+        if ((typing && c.isPrint()) || (!typing && starts)) {
+            m_dynEngaged = true;
+            f.text += c;
+            update();
+            return true;
+        }
+    }
+    return false;
 }
 
 void SketchCanvas::mouseMoveEvent(QMouseEvent* e)
@@ -821,6 +1112,7 @@ void SketchCanvas::mouseMoveEvent(QMouseEvent* e)
         m_hover = hitTest(pos);
     }
     m_mouse = pos;
+    updateDynFields();
     update();
 }
 
@@ -879,8 +1171,22 @@ void SketchCanvas::wheelEvent(QWheelEvent* e)
     update();
 }
 
+bool SketchCanvas::event(QEvent* e)
+{
+    // Tab wechselt zwischen den Feldern der dynamischen Eingabe statt den Fokus zu verschieben
+    if (e->type() == QEvent::KeyPress && !m_dyn.empty()) {
+        auto* k = static_cast<QKeyEvent*>(e);
+        if (k->key() == Qt::Key_Tab || k->key() == Qt::Key_Backtab) {
+            keyPressEvent(k);
+            return true;
+        }
+    }
+    return QWidget::event(e);
+}
+
 void SketchCanvas::keyPressEvent(QKeyEvent* e)
 {
+    if (dynKey(e)) return;
     switch (e->key()) {
     case Qt::Key_Escape:
         if (!m_pending.empty() || !m_picked.empty()) cancelOperation();

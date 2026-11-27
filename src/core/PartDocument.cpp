@@ -558,6 +558,27 @@ bool PartDocument::setModelExpression(const std::string& name, const std::string
     return false;
 }
 
+int PartDocument::nextParameterIndex() const
+{
+    int next = 0;
+    auto note = [&](const std::string& n) {
+        if (n.size() > 1 && n[0] == 'd' && n.find_first_not_of("0123456789", 1) == std::string::npos)
+            next = std::max(next, std::stoi(n.substr(1)) + 1);
+    };
+    for (const auto& f : m_features)
+        if (auto s = std::dynamic_pointer_cast<Sketch>(f))
+            for (const auto& c : s->geometry().constraints) note(c.ref.param);
+    for (const auto& p : parameters()) note(p.name);
+    return next;
+}
+
+bool PartDocument::parameterValue(const std::string& name, double& value) const
+{
+    for (const auto& p : parameters())
+        if (p.name == name) { value = p.value; return true; }
+    return false;
+}
+
 bool PartDocument::evaluateExpression(const std::string& expr, double& out, std::string* error) const
 {
     std::map<std::string, double> values;

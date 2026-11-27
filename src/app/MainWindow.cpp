@@ -358,7 +358,6 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
         else statusBar()->showMessage(t);
     });
     connect(m_view, &OcctView::contextMenuAt, this, [this](const QPoint& pos) { showViewContextMenu(pos); });
-    m_canvas->setEvaluator(evaluator());
     connect(m_canvas, &SketchCanvas::contextMenuAt, this, [this](const QPoint& pos) { showSketchContextMenu(pos); });
 
     // Grafikbereich: 3D-Fenster mit Navigationsleiste rechts
@@ -1423,7 +1422,8 @@ void MainWindow::cmdNewSketch()
     m_panelCancel->setEnabled(true);
     m_view->setDragHandler({[this](const Handle(AIS_InteractiveObject)& o) { return pickSketchPlane(o); }, {}, {}});
     statusBar()->showMessage(QString::fromUtf8("2D-Skizze: Ursprungsebene oder ebene Fläche des Bauteils anklicken · Esc bricht ab"));
-    m_view->redraw();
+    if (m_doc.body().IsNull()) m_view->fitAll(); // leeres Bauteil: auf die Ebenen zoomen
+    else m_view->redraw();
 }
 
 bool MainWindow::pickSketchPlane(const Handle(AIS_InteractiveObject)& picked)
@@ -1531,6 +1531,8 @@ void MainWindow::enterSketch(const fw::SketchPtr& sketch, bool isNew)
     m_ribbon->setCurrentWidget(m_sketchPage);
     m_stack->setCurrentWidget(m_canvas);
     m_canvas->setReference(referenceFor(*sketch));
+    m_canvas->setParameters([this](const std::string& n, double& v) { return m_doc.parameterValue(n, v); },
+                            m_doc.nextParameterIndex());
     m_canvas->begin(*sketch);
     m_canvas->setFocus();
     m_browser->setEnabled(false);
