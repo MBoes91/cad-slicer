@@ -2,6 +2,7 @@
 
 #include "core/Features.h"
 #include "slicer/PrinterProfile.h"
+#include "slicer/Settings.h"
 
 #include <QDialog>
 
@@ -72,14 +73,55 @@ private:
     QComboBox* m_op;
 };
 
-// Druckeinstellungen fuer den Slicer
+// Druckeinstellungen: alle Einstellungen nach Gruppen, Profile verwalten,
+// Hoehen-Ereignisse bearbeiten.
 class PrintSettingsDialog : public QDialog {
     Q_OBJECT
 public:
     PrintSettingsDialog(const fw::PrinterProfile& p, QWidget* parent = nullptr);
     fw::PrinterProfile profile() const;
+
 private:
-    fw::PrinterProfile m_base;
-    QDoubleSpinBox *m_layer, *m_firstLayer, *m_infill, *m_speed, *m_retract;
-    QSpinBox *m_perimeters, *m_top, *m_bottom, *m_nozzleTemp, *m_bedTemp;
+    void buildPages();
+    void loadValues(const fw::PrinterProfile& p);
+    void storeValues(fw::PrinterProfile& p) const;
+    void updateExpertVisibility();
+    void reloadProfileList(const QString& select);
+    void saveProfile(bool askName);
+
+    fw::PrinterProfile m_profile;
+    QComboBox* m_profileCombo = nullptr;
+    QCheckBox* m_expert = nullptr;
+    class QListWidget* m_groups = nullptr;
+    class QStackedWidget* m_pages = nullptr;
+    QTableWidget* m_events = nullptr;
+    struct Row {
+        const fw::SettingDef* def;
+        QWidget* editor;
+        class QFormLayout* form;
+    };
+    std::vector<Row> m_rows;
 };
+
+// Ein Hoehen-Ereignis anlegen (z. B. aus der Schichtvorschau)
+class HeightEventDialog : public QDialog {
+    Q_OBJECT
+public:
+    HeightEventDialog(double z, QWidget* parent = nullptr);
+    fw::HeightEvent event() const;
+private:
+    QDoubleSpinBox* m_z;
+    QComboBox* m_type;
+    QDoubleSpinBox* m_value;
+    class QPlainTextEdit* m_text;
+};
+
+// Verwaltung der Profildateien
+namespace profiles {
+QString directory();
+QStringList userProfileNames();
+bool load(const QString& name, fw::PrinterProfile& out);
+bool save(const fw::PrinterProfile& p);
+bool remove(const QString& name);
+bool isBuiltin(const QString& name);
+}

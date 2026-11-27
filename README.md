@@ -21,7 +21,13 @@ Technik: C++17, Qt 6 (Oberfläche), OpenCascade (CAD-Kernel), Clipper (2D-Polygo
 **Slicer (Ender 3 V2)**
 - Wände, Boden- und Deckschichten, Linien-Infill (abwechselnd ±45°), Skirt
 - Rückzug (Bowden, 5 mm), Lüfter ab Schicht 2, Start-/End-G-Code mit Reinigungslinie
-- Druckeinstellungen (Schichthöhe, Wände, Fülldichte, Temperaturen, ...)
+- Alle Einstellungen in Gruppen (Qualität, Wände, Deck/Boden, Füllung, Geschwindigkeit, Temperatur,
+  Kühlung, Rückzug, Haftung, Material, Maschine inkl. Start-/End-G-Code), mit einfacher und Experten-Ansicht
+- Druckprofile: 4 mitgelieferte (PLA Standard/Fein/Schnell, PETG), eigene speichern, importieren, exportieren (`.fwprofile`)
+- Höhen-Ereignisse: Pause (Kopf parken, M0), Filamentwechsel (M600), Düsen-/Betttemperatur, Lüfter,
+  Geschwindigkeit, Fluss oder eigener G-Code ab einer Höhe; direkt aus der Schichtvorschau einfügbar
+- Brim, Gitter- oder Linien-Füllung, Z-Naht hinten, eigene Temperaturen für die erste Schicht
+- Schätzung von Druckzeit, Filamentlänge, Gewicht und Kosten
 - Farbige Schichtvorschau auf dem Druckbett, Druckzeit- und Filamentschätzung
 - G-Code mit `;LAYER:` / `;TYPE:`-Kommentaren (kompatibel mit gängigen G-Code-Viewern)
 
@@ -34,7 +40,7 @@ Technik: C++17, Qt 6 (Oberfläche), OpenCascade (CAD-Kernel), Clipper (2D-Polygo
 1. Echter Skizzen-Modus: Linien, Bögen, Abhängigkeiten (horizontal, vertikal, parallel, koinzident) mit Solver
 2. Skizzen auf Bauteilflächen, Bohrung, Fase/Rundung
 3. Speichern/Laden im eigenen Dateiformat
-4. Slicer: Stützstrukturen, Brim, bessere Deckschicht-Erkennung
+4. Slicer: automatische Stützen, danach Modifikator-Körper (Infill-Zonen, Stützen erzwingen/sperren)
 
 ## Programm unter Windows 10 holen
 

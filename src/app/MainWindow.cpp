@@ -3,6 +3,7 @@
 #include "app/Dialogs.h"
 #include "app/OcctView.h"
 #include "app/ToolpathPreview.h"
+#include "slicer/Settings.h"
 
 #include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
@@ -20,6 +21,7 @@
 #include <QMessageBox>
 #include <QPainter>
 #include <QPainterPath>
+#include <QSettings>
 #include <QSlider>
 #include <QStatusBar>
 #include <QTabWidget>
@@ -32,7 +34,7 @@
 namespace {
 
 // Einfache, selbst gezeichnete Symbole (keine fremden Grafiken).
-enum class Icon { Sketch, Extrude, Revolve, Hole, Export, Home, Fit, Top, Front, Right, Slice, Save, Settings, Preview, Rect, Circle };
+enum class Icon { Pause, Sketch, Extrude, Revolve, Hole, Export, Home, Fit, Top, Front, Right, Slice, Save, Settings, Preview, Rect, Circle };
 
 QIcon makeIcon(Icon kind)
 {
@@ -104,6 +106,12 @@ QIcon makeIcon(Icon kind)
     case Icon::Preview:
         for (int i = 0; i < 6; ++i) { p.setPen(QPen(i % 2 ? green : QColor(220, 60, 50), 4)); p.drawLine(10, 14 + i * 8, 54, 14 + i * 8); }
         break;
+    case Icon::Pause:
+        p.setBrush(QColor(150, 185, 230));
+        for (int i = 0; i < 4; ++i) p.drawRect(8, 34 + i * 7, 48, 5);
+        p.setPen(Qt::NoPen); p.setBrush(orange);
+        p.drawRect(20, 6, 9, 22); p.drawRect(35, 6, 9, 22);
+        break;
     case Icon::Rect:
         p.setPen(QPen(blue, 4)); p.drawRect(10, 16, 44, 32);
         break;
@@ -174,6 +182,15 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
     statusBar()->showMessage(QString::fromUtf8(
         "Mausrad: Zoom  ·  Mittlere Maustaste: Verschieben  ·  Umschalt+Mitte oder Rechts: Drehen  ·  F6: Ausgangsansicht"));
 
+    // Zuletzt verwendetes Druckprofil wiederherstellen
+    QSettings settings;
+    const QByteArray stored = settings.value("druckprofil").toByteArray();
+    if (!stored.isEmpty()) {
+        fw::PrinterProfile p;
+        if (fw::deserializeProfile(stored.toStdString(), p)) m_profile = p;
+    }
+    m_profileLabel->setText(QString::fromStdString(m_profile.name));
+
     loadDemoPart();
 }
 
@@ -215,6 +232,9 @@ void MainWindow::buildRibbon()
     auto* aSave = act("G-Code\nspeichern", Icon::Save, QKeySequence("Ctrl+G"), [this] { cmdSaveGcode(); });
     auto* aSettings = act("Druckein-\nstellungen", Icon::Settings, {}, [this] { cmdPrintSettings(); });
 
+    auto* aEvent = act("Ereignis", Icon::Pause, {}, [this] { cmdAddEventAtLayer(); });
+    aEvent->setToolTip(QString::fromUtf8("Pause, Filamentwechsel, Temperatur o. Ä. ab der angezeigten Schicht einfügen"));
+
     m_layerSlider = new QSlider(Qt::Horizontal);
     m_layerSlider->setMinimumWidth(220);
     m_layerSlider->setEnabled(false);
@@ -222,8 +242,18 @@ void MainWindow::buildRibbon()
     connect(m_layerSlider, &QSlider::valueChanged, this, [this] { updatePreview(); });
     auto* layerPanel = new QWidget;
     auto* lv = new QVBoxLayout(layerPanel);
-    lv->addWidget(m_layerLabel);
-    lv->addWidget(m_layerSlider);
+    auto* sliderRow = new QHBoxLayout;
+    auto* sliderCol = new QVBoxLayout;
+    sliderCol->addWidget(m_layerLabel);
+    sliderCol->addWidget(m_layerSlider);
+    sliderRow->addLayout(sliderCol);
+    auto* eventButton = new QToolButton;
+    eventButton->setDefaultAction(aEvent);
+    eventButton->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
+    eventButton->setIconSize(QSize(32, 32));
+    eventButton->setAutoRaise(true);
+    sliderRow->addWidget(eventButton);
+    lv->addLayout(sliderRow);
     auto* lt = new QLabel("Schichtvorschau");
     lt->setAlignment(Qt::AlignCenter);
     lt->setStyleSheet("color: #5a6270; font-size: 11px; border-top: 1px solid #d0d5dc;");
@@ -239,7 +269,13 @@ void MainWindow::buildRibbon()
     m_ribbon->addTab(makeRibbonPage({makePanel("Navigieren", {aHome, aFit}),
                                      makePanel("Ansichten", {aTop, aFront, aRight})}),
                      "Ansicht");
-    m_ribbon->addTab(makeRibbonPage({makePanel(QString::fromUtf8("Creality Ender 3 V2"), {aSettings, aSlice}),
+    m_profileLabel = new QLabel;
+    m_profileLabel->setWordWrap(true);
+    m_profileLabel->setMaximumWidth(170);
+    m_profileLabel->setStyleSheet("font-size: 11px;");
+    auto* printerPanel = makePanel(QString::fromUtf8("Creality Ender 3 V2"), {aSettings, aSlice});
+    static_cast<QHBoxLayout*>(static_cast<QVBoxLayout*>(printerPanel->layout())->itemAt(0)->layout())->insertWidget(0, m_profileLabel);
+    m_ribbon->addTab(makeRibbonPage({printerPanel,
                                      makePanel("Ergebnis", {m_previewAction, aSave}), layerPanel}),
                      "3D-Druck");
     m_ribbon->setFixedHeight(118);
@@ -511,11 +547,17 @@ void MainWindow::cmdSlice()
         return;
     }
     const int minutes = static_cast<int>(m_slice.estimatedSeconds / 60.0 + 0.5);
-    statusBar()->showMessage(QString::fromUtf8("Geslict: %1 Schichten · ca. %2 h %3 min · %4 m Filament (%5 g PLA)")
+    statusBar()->showMessage(QString::fromUtf8("Geslict: %1 Schichten · ca. %2 h %3 min · %4 m Filament · %5 g · %6 €")
         .arg(m_slice.layers.size())
         .arg(minutes / 60).arg(minutes % 60)
         .arg(m_slice.filamentMm / 1000.0, 0, 'f', 2)
-        .arg(m_slice.filamentMm * M_PI * 0.875 * 0.875 * 1.24 / 1000.0, 0, 'f', 1));
+        .arg(m_slice.filamentGrams, 0, 'f', 1)
+        .arg(m_slice.filamentCost, 0, 'f', 2));
+    if (!m_slice.warnings.empty()) {
+        QStringList w;
+        for (const auto& s : m_slice.warnings) w << QString::fromUtf8(s.c_str());
+        QMessageBox::information(this, "Slicen", w.join("\n"));
+    }
     m_ribbon->setCurrentIndex(2);
     setPrintPreview(true);
 }
@@ -541,8 +583,12 @@ void MainWindow::cmdPrintSettings()
     PrintSettingsDialog dlg(m_profile, this);
     if (dlg.exec() != QDialog::Accepted) return;
     m_profile = dlg.profile();
+    QSettings().setValue("druckprofil", QByteArray::fromStdString(fw::serializeProfile(m_profile)));
+    m_profileLabel->setText(QString::fromStdString(m_profile.name));
+    const bool wasPreview = m_printPreview;
     m_slice = fw::SliceResult{};
     if (m_printPreview) setPrintPreview(false);
+    if (wasPreview) cmdSlice();
 }
 
 void MainWindow::setPrintPreview(bool on)
@@ -578,6 +624,21 @@ void MainWindow::setPrintPreview(bool on)
     }
 }
 
+void MainWindow::cmdAddEventAtLayer()
+{
+    if (!m_slice.ok) cmdSlice();
+    if (!m_slice.ok) return;
+    if (!m_printPreview) setPrintPreview(true);
+    const int layer = m_layerSlider->value();
+    const auto& L = m_slice.layers[static_cast<size_t>(layer - 1)];
+    HeightEventDialog dlg(L.z - L.height, this);
+    if (dlg.exec() != QDialog::Accepted) return;
+    m_profile.events.push_back(dlg.event());
+    QSettings().setValue("druckprofil", QByteArray::fromStdString(fw::serializeProfile(m_profile)));
+    cmdSlice();
+    m_layerSlider->setValue(layer);
+}
+
 void MainWindow::updatePreview()
 {
     if (!m_printPreview || !m_slice.ok) return;
@@ -586,8 +647,10 @@ void MainWindow::updatePreview()
     if (!m_previewAis.IsNull()) ctx->Remove(m_previewAis, false);
     m_previewAis = new ToolpathPreview(m_slice, layer - 1);
     ctx->Display(m_previewAis, 0, -1, false);
-    m_layerLabel->setText(QString("Schicht: %1 / %2  (Z = %3 mm)")
-        .arg(layer).arg(m_slice.layers.size())
-        .arg(m_slice.layers[static_cast<size_t>(layer - 1)].z, 0, 'f', 2));
+    const auto& L = m_slice.layers[static_cast<size_t>(layer - 1)];
+    QString text = QString("Schicht: %1 / %2  (Z = %3 mm)").arg(layer).arg(m_slice.layers.size()).arg(L.z, 0, 'f', 2);
+    for (const auto& e : L.events)
+        text += QString::fromUtf8("  ·  ⚑ ") + QString::fromUtf8(fw::heightEventName(e.type));
+    m_layerLabel->setText(text);
     m_view->redraw();
 }

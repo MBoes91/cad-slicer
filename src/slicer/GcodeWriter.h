@@ -22,6 +22,10 @@ public:
     void extrudeTo(double x, double y, double speedMmS, double layerHeight);
     void retract();
     void unretract();
+    void heightEvent(const HeightEvent& e);
+
+    // Ersetzt {nozzle_temp}, {bed_temp}, {bed_x}, {bed_y}
+    std::string expand(const std::string& tmpl) const;
 
     double filamentUsedMm() const { return m_e; }
     double estimatedSeconds() const { return m_seconds; }
@@ -29,6 +33,7 @@ public:
 
     double x() const { return m_x; }
     double y() const { return m_y; }
+    double z() const { return m_z; }
 
 private:
     const PrinterProfile& m_p;

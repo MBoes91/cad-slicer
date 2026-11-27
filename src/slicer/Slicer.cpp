@@ -152,6 +152,23 @@ void rotateLoopTo(Polygon2& loop, const Vec2& pos)
     std::rotate(loop.begin(), loop.begin() + static_cast<long>(best), loop.end());
 }
 
+// Startpunkt hinten (groesstes Y, bei Gleichstand kleinstes X)
+void rotateLoopToRear(Polygon2& loop)
+{
+    size_t best = 0;
+    for (size_t i = 1; i < loop.size(); ++i)
+        if (loop[i].y > loop[best].y + 1e-6 || (std::abs(loop[i].y - loop[best].y) <= 1e-6 && loop[i].x < loop[best].x))
+            best = i;
+    std::rotate(loop.begin(), loop.begin() + static_cast<long>(best), loop.end());
+}
+
+Paths outerOnly(const Paths& in)
+{
+    Paths out;
+    for (const auto& p : in) if (ClipperLib::Orientation(p)) out.push_back(p);
+    return out;
+}
+
 void addLoops(std::vector<ToolPath>& out, const Paths& paths, PathType type)
 {
     for (const auto& p : paths)
@@ -172,7 +189,7 @@ SliceResult slice(const TopoDS_Shape& bodyIn, const PrinterProfile& pp)
         double x0, y0, z0, x1, y1, z1;
         box.Get(x0, y0, z0, x1, y1, z1);
         res.sizeX = x1 - x0; res.sizeY = y1 - y0; res.sizeZ = z1 - z0;
-        const double margin = pp.skirtDistance + pp.skirtLoops * pp.lineWidth;
+        const double margin = pp.brimWidth + (pp.skirtLoops > 0 ? pp.skirtDistance + pp.skirtLoops * pp.lineWidth : 0.0);
         if (res.sizeX + 2 * margin > pp.bedX || res.sizeY + 2 * margin > pp.bedY || res.sizeZ > pp.maxZ) {
             std::ostringstream s;
             s << std::fixed << std::setprecision(1) << "Teil (" << res.sizeX << " x " << res.sizeY << " x " << res.sizeZ
@@ -217,14 +234,13 @@ SliceResult slice(const TopoDS_Shape& bodyIn, const PrinterProfile& pp)
             L.z = tops[i];
             L.height = i == 0 ? pp.firstLayerHeight : pp.layerHeight;
 
-            if (i == 0 && pp.skirtLoops > 0) {
-                for (int k = pp.skirtLoops - 1; k >= 0; --k) {
-                    Paths sk = offset(region[0], pp.skirtDistance + k * w);
-                    // nur die aeussere Huelle
-                    Paths outer;
-                    for (auto& p : sk) if (ClipperLib::Orientation(p)) outer.push_back(p);
-                    addLoops(L.paths, outer, PathType::Skirt);
-                }
+            if (i == 0) {
+                const int brimLoops = static_cast<int>(std::lround(pp.brimWidth / w));
+                for (int k = 0; k < brimLoops; ++k)
+                    addLoops(L.paths, outerOnly(offset(region[0], w / 2 + k * w)), PathType::Brim);
+                for (int k = pp.skirtLoops - 1; k >= 0; --k)
+                    addLoops(L.paths, outerOnly(offset(region[0], brimLoops * w + pp.skirtDistance + k * w)),
+                             PathType::Skirt);
             }
 
             // Waende von innen nach aussen
@@ -245,13 +261,39 @@ SliceResult slice(const TopoDS_Shape& bodyIn, const PrinterProfile& pp)
 
             Paths solid = firstCover ? Paths{} : boolean(inner[i], covered, ClipperLib::ctDifference);
             Paths sparse = boolean(inner[i], solid, ClipperLib::ctDifference);
-            const double angle = (i % 2 == 0) ? 45.0 : -45.0;
+            const double angle = pp.infillAngle + ((i % 2 == 0) ? 0.0 : 90.0);
 
-            auto solidLines = lineFill(solid, w, angle);
-            for (auto& l : solidLines) L.paths.push_back({PathType::Solid, std::move(l), false});
+            for (auto& l : lineFill(solid, w, angle))
+                L.paths.push_back({PathType::Solid, std::move(l), false});
             if (pp.infillDensity > 0.001) {
-                auto infill = lineFill(sparse, w / pp.infillDensity, angle);
+                std::vector<Polygon2> infill;
+                if (static_cast<InfillPattern>(pp.infillPattern) == InfillPattern::Grid) {
+                    infill = lineFill(sparse, 2 * w / pp.infillDensity, pp.infillAngle);
+                    auto cross = lineFill(sparse, 2 * w / pp.infillDensity, pp.infillAngle + 90.0);
+                    infill.insert(infill.end(), cross.begin(), cross.end());
+                } else {
+                    infill = lineFill(sparse, w / pp.infillDensity, angle);
+                }
                 for (auto& l : infill) L.paths.push_back({PathType::Infill, std::move(l), false});
+            }
+        }
+
+        // --- Hoehen-Ereignisse den Schichten zuordnen ------------------------------
+        {
+            std::vector<HeightEvent> events = pp.events;
+            std::stable_sort(events.begin(), events.end(),
+                             [](const HeightEvent& a, const HeightEvent& b) { return a.z < b.z; });
+            size_t next = 0;
+            for (size_t i = 0; i < n && next < events.size(); ++i) {
+                const double bottom = tops[i] - res.layers[i].height;
+                while (next < events.size() && events[next].z <= bottom + 1e-6)
+                    res.layers[i].events.push_back(events[next++]);
+            }
+            for (; next < events.size(); ++next) {
+                std::ostringstream s;
+                s << std::fixed << std::setprecision(2) << heightEventName(events[next].type)
+                  << " bei Z = " << events[next].z << " mm liegt über dem Teil und wird ignoriert";
+                res.warnings.push_back(s.str());
             }
         }
 
@@ -269,6 +311,11 @@ SliceResult slice(const TopoDS_Shape& bodyIn, const PrinterProfile& pp)
         for (size_t i = 0; i < n; ++i) {
             SlicedLayer& L = res.layers[i];
             g.comment("LAYER:" + std::to_string(i));
+            for (const auto& e : L.events) g.heightEvent(e);
+            if (i == 1) {
+                if (pp.nozzleTemp != pp.nozzleTempFirstLayer) g.raw("M104 S" + std::to_string(pp.nozzleTemp));
+                if (pp.bedTemp != pp.bedTempFirstLayer) g.raw("M140 S" + std::to_string(pp.bedTemp));
+            }
             g.retract();
             g.moveZ(L.z);
             if (static_cast<int>(i) + 1 == pp.fanFromLayer) g.setFan(pp.fanPercent);
@@ -276,7 +323,12 @@ SliceResult slice(const TopoDS_Shape& bodyIn, const PrinterProfile& pp)
             // Reihenfolge innerhalb der Typen nach Leerweg optimieren
             std::vector<ToolPath> ordered;
             Vec2 pos{g.x(), g.y()};
-            for (PathType t : {PathType::Skirt, PathType::InnerWall, PathType::OuterWall, PathType::Solid, PathType::Infill}) {
+            const std::vector<PathType> order = pp.outerWallFirst
+                ? std::vector<PathType>{PathType::Skirt, PathType::Brim, PathType::OuterWall, PathType::InnerWall, PathType::Solid, PathType::Infill}
+                : std::vector<PathType>{PathType::Skirt, PathType::Brim, PathType::InnerWall, PathType::OuterWall, PathType::Solid, PathType::Infill};
+            const bool rear = static_cast<SeamPosition>(pp.seamPosition) == SeamPosition::Rear;
+            for (PathType t : order) {
+                const bool isWall = t == PathType::OuterWall || t == PathType::InnerWall;
                 std::vector<Polygon2> loops, lines;
                 for (auto& tp : L.paths)
                     if (tp.type == t) (tp.closed ? loops : lines).push_back(tp.points);
@@ -291,7 +343,8 @@ SliceResult slice(const TopoDS_Shape& bodyIn, const PrinterProfile& pp)
                         }
                     }
                     used[best] = true;
-                    rotateLoopTo(loops[best], pos);
+                    if (rear && isWall) rotateLoopToRear(loops[best]);
+                    else rotateLoopTo(loops[best], pos);
                     pos = loops[best].front();
                     ordered.push_back({t, loops[best], true});
                 }
@@ -305,14 +358,20 @@ SliceResult slice(const TopoDS_Shape& bodyIn, const PrinterProfile& pp)
             bool firstPath = true;
             for (const auto& tp : L.paths) {
                 if (firstPath || tp.type != current) {
-                    static const char* names[] = {"SKIRT", "WALL-OUTER", "WALL-INNER", "SKIN", "FILL"};
+                    static const char* names[] = {"SKIRT", "WALL-OUTER", "WALL-INNER", "SKIN", "FILL", "SKIRT"};
                     g.comment(std::string("TYPE:") + names[static_cast<int>(tp.type)]);
                     current = tp.type;
                     firstPath = false;
                 }
                 double speed = pp.printSpeed;
-                if (tp.type == PathType::OuterWall) speed = pp.outerWallSpeed;
-                if (i == 0) speed = pp.firstLayerSpeed;
+                switch (tp.type) {
+                case PathType::OuterWall: speed = pp.outerWallSpeed; break;
+                case PathType::InnerWall: speed = pp.innerWallSpeed; break;
+                case PathType::Solid: speed = pp.topBottomSpeed; break;
+                case PathType::Skirt: case PathType::Brim: speed = pp.firstLayerSpeed; break;
+                case PathType::Infill: speed = pp.printSpeed; break;
+                }
+                if (i == 0) speed = std::min(speed, pp.firstLayerSpeed);
 
                 g.travel(tp.points.front().x, tp.points.front().y);
                 for (size_t k = 1; k < tp.points.size(); ++k)
@@ -325,6 +384,9 @@ SliceResult slice(const TopoDS_Shape& bodyIn, const PrinterProfile& pp)
 
         res.filamentMm = g.filamentUsedMm();
         res.estimatedSeconds = g.estimatedSeconds();
+        const double areaMm2 = M_PI * pp.filamentDiameter * pp.filamentDiameter / 4.0;
+        res.filamentGrams = res.filamentMm * areaMm2 / 1000.0 * pp.filamentDensity;
+        res.filamentCost = res.filamentGrams / 1000.0 * pp.filamentCostPerKg;
         std::ostringstream header;
         header << std::fixed << std::setprecision(0) << ";TIME:" << res.estimatedSeconds << '\n'
                << std::setprecision(4) << ";Filament used: " << res.filamentMm / 1000.0 << "m\n";

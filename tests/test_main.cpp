@@ -1,5 +1,6 @@
 // Einfache Tests ohne Framework: Bauteil modellieren, slicen, G-Code pruefen.
 #include "core/PartDocument.h"
+#include "slicer/Settings.h"
 #include "slicer/Slicer.h"
 
 #include <BRepGProp.hxx>
@@ -74,7 +75,7 @@ static void testSlice()
     if (!r.ok) std::printf("Slicer-Fehler: %s\n", r.error.c_str());
     CHECK(r.ok);
     CHECK(r.layers.size() == 25);
-    CHECK(r.gcode.find("M109 S200") != std::string::npos);
+    CHECK(r.gcode.find("M109 S205") != std::string::npos);
     CHECK(r.gcode.find("G28") != std::string::npos);
     CHECK(r.gcode.find(";LAYER:24") != std::string::npos);
     CHECK(r.filamentMm > 100 && r.filamentMm < 2000);
@@ -101,8 +102,52 @@ static void testSlice()
     CHECK(!fw::slice(doc.body(), pp).ok);
 }
 
+static void testProfilesAndEvents()
+{
+    // Profil-Datei: Hin- und Rueckweg
+    fw::PrinterProfile p = fw::builtinProfiles().at(3);
+    p.infillDensity = 0.35;
+    p.startGcode = "G28\nM117 Hallo ; Kommentar";
+    p.events.push_back({2.0, fw::HeightEventType::FilamentChange, 0, ""});
+    p.events.push_back({3.0, fw::HeightEventType::FanPercent, 50, ""});
+    p.events.push_back({4.0, fw::HeightEventType::CustomGcode, 0, "M117 Test;x\nG4 S1"});
+    p.events.push_back({99.0, fw::HeightEventType::Pause, 0, ""});
+    fw::PrinterProfile q;
+    CHECK(fw::deserializeProfile(fw::serializeProfile(p), q));
+    CHECK(q.name == p.name && q.nozzleTemp == 235 && std::abs(q.infillDensity - 0.35) < 1e-9);
+    CHECK(q.startGcode == p.startGcode);
+    CHECK(q.events.size() == 4 && q.events[2].gcode == "M117 Test;x\nG4 S1");
+
+    // Slicen mit Ereignissen, Brim und Gitter-Fuellung
+    fw::PartDocument doc;
+    auto sk = std::make_shared<fw::Sketch>("Skizze1", fw::SketchPlane::XY);
+    sk->rectangles().push_back({0, 0, 20, 20});
+    doc.addFeature(sk);
+    doc.addFeature(std::make_shared<fw::ExtrudeFeature>("Extrusion1", sk, 5.0));
+    CHECK(doc.recompute());
+    q.brimWidth = 4.0;
+    q.infillPattern = static_cast<int>(fw::InfillPattern::Grid);
+    fw::SliceResult r = fw::slice(doc.body(), q);
+    CHECK(r.ok);
+    CHECK(r.warnings.size() == 1); // Pause bei 99 mm liegt ueber dem Teil
+    // M600 vor der Schicht, die bei Z=2,0 beginnt (Schicht 10, Oberkante 2,2)
+    const auto m600 = r.gcode.find("M600");
+    CHECK(m600 != std::string::npos);
+    CHECK(m600 > r.gcode.find(";LAYER:10\n") && m600 < r.gcode.find(";LAYER:11\n"));
+    CHECK(r.gcode.find("M106 S128") != std::string::npos);
+    CHECK(r.gcode.find("G4 S1") != std::string::npos);
+    CHECK(r.gcode.find("M109 S240") != std::string::npos);  // erste Schicht PETG
+    CHECK(r.gcode.find("M104 S235") != std::string::npos);  // danach Normaltemperatur
+    CHECK(r.gcode.find("M117 Hallo") != std::string::npos);
+    int brim = 0;
+    for (const auto& tp : r.layers[0].paths) brim += tp.type == fw::PathType::Brim;
+    CHECK(brim == 10);
+    CHECK(r.filamentGrams > 0.5 && r.filamentCost > 0);
+}
+
 int main()
 {
+    testProfilesAndEvents();
     testExtrudeWithHole();
     testRevolve();
     testSlice();

@@ -133,6 +133,11 @@ void OcctView::paintEvent(QPaintEvent*)
         m_viewSize = px;
         m_view->MustBeResized();
     }
+    if (m_fitPending) {
+        m_fitPending = false;
+        m_view->FitAll(0.15, false);
+        m_view->Invalidate();
+    }
     FlushViewEvents(m_ctx, m_view, true);
 }
 
@@ -160,9 +165,9 @@ void OcctView::redraw()
 
 void OcctView::fitAll()
 {
-    if (m_view.IsNull()) return;
-    m_view->FitAll(0.15, false);
-    redraw();
+    // Erst beim naechsten Zeichnen ausfuehren, wenn die Fenstergroesse sicher stimmt
+    m_fitPending = true;
+    update();
 }
 
 void OcctView::homeView()
@@ -175,8 +180,7 @@ void OcctView::setStandardView(V3d_TypeOfOrientation o)
 {
     if (m_view.IsNull()) return;
     m_view->SetProj(o);
-    m_view->FitAll(0.15, false);
-    redraw();
+    fitAll();
 }
 
 void OcctView::mousePressEvent(QMouseEvent* e)

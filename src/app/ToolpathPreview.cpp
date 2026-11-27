@@ -14,6 +14,7 @@ Quantity_Color colorFor(fw::PathType t, bool current)
     auto c = [k](double r, double g, double b) { return Quantity_Color(r * k, g * k, b * k, Quantity_TOC_sRGB); };
     switch (t) {
     case fw::PathType::Skirt: return c(0.55, 0.55, 0.55);
+    case fw::PathType::Brim: return c(0.35, 0.55, 0.85);
     case fw::PathType::OuterWall: return c(0.90, 0.25, 0.20);
     case fw::PathType::InnerWall: return c(0.95, 0.65, 0.15);
     case fw::PathType::Solid: return c(0.75, 0.30, 0.75);

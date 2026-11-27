@@ -46,6 +46,7 @@ private:
     void cmdSlice();
     void cmdSaveGcode();
     void cmdPrintSettings();
+    void cmdAddEventAtLayer();
     void setPrintPreview(bool on);
     void updatePreview();
 
@@ -58,6 +59,7 @@ private:
     QTreeWidget* m_browser = nullptr;
     QSlider* m_layerSlider = nullptr;
     QLabel* m_layerLabel = nullptr;
+    QLabel* m_profileLabel = nullptr;
     QAction* m_previewAction = nullptr;
 
     Handle(AIS_Shape) m_bodyAis;

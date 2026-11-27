@@ -37,7 +37,8 @@ target_link_libraries(formwerk_core PUBLIC ${OCC_CORE_LIBS} TKSTL)
 add_library(formwerk_slicer STATIC
   src/slicer/MeshSlicer.cpp
   src/slicer/GcodeWriter.cpp
-  src/slicer/Slicer.cpp)
+  src/slicer/Slicer.cpp
+  src/slicer/Settings.cpp)
 target_include_directories(formwerk_slicer PUBLIC src ${CLIPPER_INCLUDE_DIR})
 target_link_libraries(formwerk_slicer PUBLIC formwerk_core ${CLIPPER_LIBRARY})
 

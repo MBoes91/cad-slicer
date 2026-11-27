@@ -51,4 +51,5 @@ private:
     Handle(AIS_InteractiveContext) m_ctx;
     Handle(AIS_ViewCube) m_cube;
     QSize m_viewSize;
+    bool m_fitPending = false;
 };

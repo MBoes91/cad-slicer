@@ -10,7 +10,7 @@
 
 namespace fw {
 
-enum class PathType { Skirt, OuterWall, InnerWall, Solid, Infill };
+enum class PathType { Skirt, OuterWall, InnerWall, Solid, Infill, Brim };
 
 struct ToolPath {
     PathType type;
@@ -22,6 +22,7 @@ struct SlicedLayer {
     double z;
     double height;
     std::vector<ToolPath> paths;
+    std::vector<HeightEvent> events; // vor dieser Schicht ausgefuehrt
 };
 
 struct SliceResult {
@@ -29,7 +30,10 @@ struct SliceResult {
     std::string error;
     std::string gcode;
     std::vector<SlicedLayer> layers;   // fuer die Schichtvorschau
+    std::vector<std::string> warnings;
     double filamentMm = 0;
+    double filamentGrams = 0;
+    double filamentCost = 0;
     double estimatedSeconds = 0;
     double sizeX = 0, sizeY = 0, sizeZ = 0;
 };
