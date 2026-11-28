@@ -53,6 +53,54 @@ static void testExtrudeWithHole()
     CHECK(!doc.removeFeature(sk));
 }
 
+static void testBranchedProfile()
+{
+    // Rechteck mit Linie quer durch (verzweigte Kontur) und offener Linie
+    auto sk = std::make_shared<fw::Sketch>("Skizze1", fw::SketchPlane::XY);
+    sk->addRectangle(0, 0, 40, 30);
+    auto& g = sk->geometry();
+    auto line = [&](double x0, double y0, double x1, double y1) {
+        fw::SkEntity e;
+        e.type = fw::SkType::Line;
+        e.p0 = g.addPoint(x0, y0);
+        e.p1 = g.addPoint(x1, y1);
+        g.entities.push_back(e);
+    };
+    line(15, 0, 15, 30);   // teilt das Rechteck
+    line(30, 10, 35, 20);  // offene Linie, wird ignoriert
+    const auto regions = sk->regions();
+    CHECK(regions.size() == 2);
+    fw::PartDocument doc;
+    doc.addFeature(sk);
+    auto ex = std::make_shared<fw::ExtrudeFeature>("Extrusion1", sk, 10.0);
+    doc.addFeature(ex);
+    CHECK(doc.recompute());
+    CHECK(std::abs(volume(doc.body()) - 40 * 30 * 10) < 1.0);
+    // nur der linke Bereich
+    ex->setProfilePicks({gp_Pnt(5, 5, 0)});
+    CHECK(doc.recompute());
+    CHECK(std::abs(volume(doc.body()) - 15 * 30 * 10) < 1.0);
+    const std::string text = doc.toText();
+    fw::PartDocument doc2;
+    CHECK(doc2.fromText(text));
+    CHECK(doc2.recompute());
+    CHECK(std::abs(volume(doc2.body()) - 15 * 30 * 10) < 1.0);
+
+    // Kreis im Rechteck mit Linie durch beide: Loch bleibt Loch
+    auto sk3 = std::make_shared<fw::Sketch>("Skizze3", fw::SketchPlane::XY);
+    sk3->addRectangle(0, 0, 40, 30);
+    sk3->addCircle(20, 15, 5);
+    auto& g3 = sk3->geometry();
+    fw::SkEntity e;
+    e.type = fw::SkType::Line;
+    e.p0 = g3.addPoint(0, 15);
+    e.p1 = g3.addPoint(40, 15);
+    g3.entities.push_back(e);
+    GProp_GProps gp;
+    BRepGProp::SurfaceProperties(sk3->profile(), gp);
+    CHECK(std::abs(gp.Mass() - (1200 - M_PI * 25)) < 0.5);
+}
+
 static void testRevolve()
 {
     fw::PartDocument doc;
@@ -642,6 +690,7 @@ int main()
     testCancel();
     testSupports();
     testProfilesAndEvents();
+    testBranchedProfile();
     testExtrudeWithHole();
     testRevolve();
     testSlice();

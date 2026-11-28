@@ -4,6 +4,9 @@
 #include "core/SketchGeometry.h"
 
 #include <gp_Ax3.hxx>
+#include <gp_Pnt.hxx>
+#include <TopoDS_Face.hxx>
+#include <vector>
 
 namespace fw {
 
@@ -48,12 +51,23 @@ public:
 
     // Geschlossene Profilflaechen (Konstruktionslinien zaehlen nicht).
     // Ineinanderliegende Konturen werden abwechselnd als Material und Loch gewertet.
-    TopoDS_Shape profile() const;
+    // Sind Konturen verzweigt (z. B. Linie quer durch ein Rechteck), werden wie in
+    // Inventor die einzelnen Bereiche gebildet; offene Linien zaehlen nicht.
+    // picks: Punkte in den gewuenschten Bereichen (leer = Standardauswahl)
+    TopoDS_Shape profile(const std::vector<gp_Pnt>& picks = {}) const;
+
+    // Einzelne geschlossene Bereiche der Skizze (fuer die Profilauswahl).
+    // level: Zahl der Kanten, die man vom Aussenraum bis zum Bereich kreuzt
+    // (ungerade = gehoert zur Standardauswahl).
+    struct Region { TopoDS_Face face; int level = 1; };
+    std::vector<Region> regions() const;
 
     // Kanten der Skizze zur Anzeige im 3D-Fenster.
     TopoDS_Shape wireframe() const;
 
 private:
+    TopoDS_Shape simpleProfile() const;
+
     SketchPlane m_planeType;
     double m_offset;
     gp_Ax3 m_frame; // nur fuer SketchPlane::Custom

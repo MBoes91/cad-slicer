@@ -59,7 +59,7 @@ TopoDS_Shape ExtrudeFeature::tool(const TopoDS_Shape&) const
     if (!m_sketch) throw std::runtime_error("Extrusion ohne Skizze");
     if (std::abs(m_distance) < 1e-6) throw std::runtime_error("Extrusionsabstand ist 0");
 
-    TopoDS_Shape profile = m_sketch->profile();
+    TopoDS_Shape profile = m_sketch->profile(m_picks);
     const gp_Dir n = m_sketch->plane().Direction();
     if (m_symmetric) {
         gp_Trsf t;
@@ -88,7 +88,7 @@ TopoDS_Shape RevolveFeature::tool(const TopoDS_Shape&) const
 
     const gp_Ax3 ax = m_sketch->plane();
     const gp_Ax1 axis(ax.Location(), m_axis == RevolveAxis::SketchX ? ax.XDirection() : ax.YDirection());
-    return BRepPrimAPI_MakeRevol(m_sketch->profile(), axis, m_angle * M_PI / 180.0).Shape();
+    return BRepPrimAPI_MakeRevol(m_sketch->profile(m_picks), axis, m_angle * M_PI / 180.0).Shape();
 }
 
 } // namespace fw

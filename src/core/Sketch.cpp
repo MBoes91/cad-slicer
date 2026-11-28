@@ -1,6 +1,17 @@
 #include "core/Sketch.h"
 
 #include <BRepAlgoAPI_Cut.hxx>
+#include <BRepAlgoAPI_Splitter.hxx>
+#include <BOPAlgo_Builder.hxx>
+#include <BRepBndLib.hxx>
+#include <BRepGProp.hxx>
+#include <GProp_GProps.hxx>
+#include <Bnd_Box.hxx>
+#include <TopExp.hxx>
+#include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
+#include <TopTools_IndexedMapOfShape.hxx>
+#include <TopTools_ListOfShape.hxx>
+#include <queue>
 #include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
@@ -19,6 +30,7 @@
 #include <Geom_TrimmedCurve.hxx>
 #include <gp_Circ.hxx>
 #include <gp_Pln.hxx>
+#include <ElSLib.hxx>
 
 #include <algorithm>
 #include <cmath>
@@ -151,7 +163,173 @@ TopoDS_Edge makeEdge(const gp_Ax3& ax, const SketchGeometry& g, const SkEntity& 
 
 } // namespace
 
-TopoDS_Shape Sketch::profile() const
+std::vector<Sketch::Region> Sketch::regions() const
+{
+    const gp_Ax3 ax = plane();
+    const gp_Pln pln(ax);
+    // 1. Alle Kanten gegenseitig an Schnittpunkten teilen
+    BOPAlgo_Builder gf;
+    int n = 0;
+    for (const auto& e : m_geo.entities) {
+        if (e.construction) continue;
+        try { gf.AddArgument(makeEdge(ax, m_geo, e)); ++n; } catch (...) {}
+    }
+    if (n == 0) return {};
+    gf.SetFuzzyValue(1e-6);
+    gf.Perform();
+    if (gf.HasErrors()) throw std::runtime_error("Skizzenkanten konnten nicht verschnitten werden");
+
+    // 2. Offene Enden (Kanten mit freiem Endpunkt) wiederholt entfernen
+    std::vector<TopoDS_Edge> edges;
+    for (TopExp_Explorer ex(gf.Shape(), TopAbs_EDGE); ex.More(); ex.Next()) edges.push_back(TopoDS::Edge(ex.Current()));
+    for (bool changed = true; changed;) {
+        changed = false;
+        TopoDS_Compound c;
+        BRep_Builder b;
+        b.MakeCompound(c);
+        for (const auto& e : edges) b.Add(c, e);
+        TopTools_IndexedDataMapOfShapeListOfShape vmap;
+        TopExp::MapShapesAndAncestors(c, TopAbs_VERTEX, TopAbs_EDGE, vmap);
+        std::vector<TopoDS_Edge> keep;
+        for (const auto& e : edges) {
+            TopoDS_Vertex v0, v1;
+            TopExp::Vertices(e, v0, v1);
+            const bool closed = !v0.IsNull() && v0.IsSame(v1);
+            bool free = false;
+            for (const TopoDS_Vertex& v : {v0, v1}) {
+                if (v.IsNull() || closed) continue;
+                int deg = 0;
+                for (TopTools_ListIteratorOfListOfShape it(vmap.FindFromKey(v)); it.More(); it.Next()) ++deg;
+                if (deg < 2) free = true;
+            }
+            if (free) changed = true;
+            else keep.push_back(e);
+        }
+        edges.swap(keep);
+    }
+    if (edges.empty()) return {};
+
+    // 3. Grosse Ebenenflaeche mit den Kanten teilen
+    Bnd_Box box;
+    for (const auto& e : edges) BRepBndLib::Add(e, box);
+    double x0, y0, z0, x1, y1, z1;
+    box.Get(x0, y0, z0, x1, y1, z1);
+    const double big = 10.0 + std::max({x1 - x0, y1 - y0, z1 - z0}) * 2.0;
+    const gp_Pnt mid((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2);
+    double mu, mv;
+    ElSLib::Parameters(pln, mid, mu, mv);
+    const gp_Pln centred(gp_Ax3(ElSLib::Value(mu, mv, pln), ax.Direction(), ax.XDirection()));
+    TopoDS_Face sheet = BRepBuilderAPI_MakeFace(centred, -big, big, -big, big).Face();
+    TopTools_IndexedMapOfShape outerEdges;
+    TopExp::MapShapes(sheet, TopAbs_EDGE, outerEdges);
+
+    BRepAlgoAPI_Splitter sp;
+    TopTools_ListOfShape args, tools;
+    args.Append(sheet);
+    for (const auto& e : edges) tools.Append(e);
+    sp.SetArguments(args);
+    sp.SetTools(tools);
+    sp.SetFuzzyValue(1e-6);
+    sp.Build();
+    if (!sp.IsDone()) throw std::runtime_error("Skizzenbereiche konnten nicht gebildet werden");
+
+    std::vector<TopoDS_Face> faces;
+    for (TopExp_Explorer ex(sp.Shape(), TopAbs_FACE); ex.More(); ex.Next()) faces.push_back(TopoDS::Face(ex.Current()));
+
+    // 4. Ebenen: Aussenraum = 0, je gekreuzter Kante +1 (Breitensuche)
+    TopoDS_Compound all;
+    BRep_Builder bb;
+    bb.MakeCompound(all);
+    for (const auto& f : faces) bb.Add(all, f);
+    TopTools_IndexedDataMapOfShapeListOfShape emap;
+    TopExp::MapShapesAndAncestors(all, TopAbs_EDGE, TopAbs_FACE, emap);
+    auto indexOf = [&](const TopoDS_Shape& f) {
+        for (size_t i = 0; i < faces.size(); ++i) if (faces[i].IsSame(f)) return static_cast<int>(i);
+        return -1;
+    };
+    std::vector<int> level(faces.size(), -1);
+    std::queue<int> q;
+    for (size_t i = 0; i < faces.size(); ++i) {
+        // Aussenstueck: Teil seines Randes liegt auf dem Rand der grossen Flaeche
+        for (TopExp_Explorer ex(faces[i], TopAbs_EDGE); ex.More(); ex.Next()) {
+            const TopoDS_Edge& e = TopoDS::Edge(ex.Current());
+            for (TopExp_Explorer vx(e, TopAbs_VERTEX); vx.More(); vx.Next()) {
+                const gp_Pnt p = BRep_Tool::Pnt(TopoDS::Vertex(vx.Current()));
+                double u, v;
+                ElSLib::Parameters(centred, p, u, v);
+                if (std::abs(std::abs(u) - big) < 1e-6 || std::abs(std::abs(v) - big) < 1e-6) { level[i] = 0; break; }
+            }
+            if (level[i] == 0) break;
+        }
+        if (level[i] == 0) q.push(static_cast<int>(i));
+    }
+    while (!q.empty()) {
+        const int i = q.front();
+        q.pop();
+        for (TopExp_Explorer ex(faces[static_cast<size_t>(i)], TopAbs_EDGE); ex.More(); ex.Next()) {
+            const int k = emap.FindIndex(ex.Current());
+            if (k == 0) continue;
+            for (TopTools_ListIteratorOfListOfShape it(emap.FindFromIndex(k)); it.More(); it.Next()) {
+                const int j = indexOf(it.Value());
+                if (j >= 0 && level[static_cast<size_t>(j)] < 0) {
+                    level[static_cast<size_t>(j)] = level[static_cast<size_t>(i)] + 1;
+                    q.push(j);
+                }
+            }
+        }
+    }
+    std::vector<Region> out;
+    for (size_t i = 0; i < faces.size(); ++i) {
+        if (level[i] == 0) continue;
+        out.push_back({faces[i], level[i] < 0 ? 1 : level[i]});
+    }
+    return out;
+}
+
+namespace {
+
+// Liegt p in der Flaeche (Rand zaehlt nicht)?
+bool faceContains(const TopoDS_Face& f, const gp_Pnt& p)
+{
+    BRepClass_FaceClassifier cls(f, p, 1e-6);
+    return cls.State() == TopAbs_IN;
+}
+
+TopoDS_Shape fuseFaces(const std::vector<TopoDS_Face>& faces)
+{
+    if (faces.empty()) throw std::runtime_error("Skizze enthaelt kein geschlossenes Profil");
+    TopoDS_Shape result = faces.front();
+    for (size_t i = 1; i < faces.size(); ++i) result = BRepAlgoAPI_Fuse(result, faces[i]).Shape();
+    ShapeUpgrade_UnifySameDomain unify(result, true, true, true);
+    unify.Build();
+    return unify.Shape();
+}
+
+} // namespace
+
+TopoDS_Shape Sketch::profile(const std::vector<gp_Pnt>& picks) const
+{
+    if (!picks.empty()) {
+        std::vector<TopoDS_Face> chosen;
+        for (const auto& r : regions())
+            for (const auto& p : picks)
+                if (faceContains(r.face, p)) { chosen.push_back(r.face); break; }
+        if (chosen.empty()) throw std::runtime_error("Gewaehlte Profilbereiche nicht mehr vorhanden");
+        return fuseFaces(chosen);
+    }
+    try {
+        return simpleProfile();
+    } catch (const std::exception&) {
+        // Verzweigte oder offene Konturen: Bereiche bilden wie in Inventor
+        std::vector<TopoDS_Face> chosen;
+        for (const auto& r : regions())
+            if (r.level % 2 == 1) chosen.push_back(r.face);
+        if (chosen.empty()) throw std::runtime_error("Skizze enthaelt kein geschlossenes Profil");
+        return fuseFaces(chosen);
+    }
+}
+
+TopoDS_Shape Sketch::simpleProfile() const
 {
     const gp_Ax3 ax = plane();
     const gp_Pln pln(ax);

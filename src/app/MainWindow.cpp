@@ -13,6 +13,7 @@
 #include <BRepPrimAPI_MakeCylinder.hxx>
 #include <BRepPrimAPI_MakeCone.hxx>
 #include <BRep_Builder.hxx>
+#include <BRepClass_FaceClassifier.hxx>
 #include <BRep_Tool.hxx>
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
@@ -2153,6 +2154,95 @@ std::vector<gp_Pnt>* MainWindow::pickPoints() const
     return nullptr;
 }
 
+// Gewaehlte Profilbereiche der Extrusion/Drehung in Bearbeitung
+std::vector<gp_Pnt>* MainWindow::regionPicks() const
+{
+    if (auto e = std::dynamic_pointer_cast<fw::ExtrudeFeature>(m_editFeature)) return &e->profilePicksRef();
+    if (auto r = std::dynamic_pointer_cast<fw::RevolveFeature>(m_editFeature)) return &r->profilePicksRef();
+    return nullptr;
+}
+
+namespace {
+fw::SketchPtr sketchOf(const fw::FeaturePtr& f)
+{
+    if (auto e = std::dynamic_pointer_cast<fw::ExtrudeFeature>(f)) return e->sketch();
+    if (auto r = std::dynamic_pointer_cast<fw::RevolveFeature>(f)) return r->sketch();
+    return nullptr;
+}
+
+// Welche Bereiche sind gewaehlt? (ohne Auswahl: Standard wie beim Berechnen)
+std::vector<bool> regionSelection(const std::vector<fw::Sketch::Region>& regs, const std::vector<gp_Pnt>& picks)
+{
+    std::vector<bool> sel(regs.size(), false);
+    for (size_t i = 0; i < regs.size(); ++i) {
+        if (picks.empty()) { sel[i] = regs[i].level % 2 == 1; continue; }
+        for (const auto& p : picks) {
+            BRepClass_FaceClassifier cls(regs[i].face, p, 1e-6);
+            if (cls.State() == TopAbs_IN) { sel[i] = true; break; }
+        }
+    }
+    return sel;
+}
+} // namespace
+
+void MainWindow::showRegionSelection()
+{
+    std::vector<gp_Pnt>* picks = regionPicks();
+    const fw::SketchPtr sk = sketchOf(m_editFeature);
+    const auto& ctx = m_view->context();
+    clearEdgeSelection();
+    if (!picks || !sk || ctx.IsNull()) return;
+    std::vector<fw::Sketch::Region> regs;
+    try { regs = sk->regions(); } catch (...) { return; }
+    if (regs.size() < 2) return; // nur ein Bereich: nichts zu waehlen
+    const auto sel = regionSelection(regs, *picks);
+
+    TopoDS_Compound all, chosen;
+    BRep_Builder bb;
+    bb.MakeCompound(all);
+    bb.MakeCompound(chosen);
+    for (size_t i = 0; i < regs.size(); ++i) {
+        bb.Add(all, regs[i].face);
+        if (sel[i]) bb.Add(chosen, regs[i].face);
+    }
+    if (!m_bodyAis.IsNull()) ctx->Deactivate(m_bodyAis);
+    m_edgeBaseAis = new AIS_Shape(all);
+    m_edgeBaseAis->SetColor(Quantity_Color(0.95, 0.75, 0.35, Quantity_TOC_sRGB));
+    m_edgeBaseAis->SetTransparency(0.75);
+    m_edgeBaseAis->Attributes()->SetFaceBoundaryDraw(true); // Bereichsgrenzen sichtbar
+    m_edgeBaseAis->SetZLayer(Graphic3d_ZLayerId_Topmost);
+    ctx->Display(m_edgeBaseAis, AIS_Shaded, AIS_Shape::SelectionMode(TopAbs_FACE), false);
+    m_edgeSelAis = new AIS_Shape(chosen);
+    m_edgeSelAis->SetColor(Quantity_Color(0.10, 0.45, 0.95, Quantity_TOC_sRGB));
+    m_edgeSelAis->SetTransparency(0.5);
+    m_edgeSelAis->SetZLayer(Graphic3d_ZLayerId_Topmost);
+    ctx->Display(m_edgeSelAis, AIS_Shaded, -1, false);
+    ctx->Deactivate(m_edgeSelAis);
+}
+
+bool MainWindow::pickRegion(const Handle(AIS_InteractiveObject)& picked)
+{
+    std::vector<gp_Pnt>* picks = regionPicks();
+    const fw::SketchPtr sk = sketchOf(m_editFeature);
+    const auto& ctx = m_view->context();
+    if (!picks || !sk || m_edgeBaseAis.IsNull() || picked != m_edgeBaseAis || !ctx->HasDetectedShape()) return false;
+    const TopoDS_Shape s = ctx->DetectedShape();
+    if (s.ShapeType() != TopAbs_FACE) return false;
+    std::vector<fw::Sketch::Region> regs;
+    try { regs = sk->regions(); } catch (...) { return false; }
+    auto sel = regionSelection(regs, *picks);
+    const gp_Pnt p = fw::facePoint(TopoDS::Face(s));
+    for (size_t i = 0; i < regs.size(); ++i) {
+        BRepClass_FaceClassifier cls(regs[i].face, p, 1e-6);
+        if (cls.State() == TopAbs_IN) { sel[i] = !sel[i]; break; }
+    }
+    picks->clear();
+    for (size_t i = 0; i < regs.size(); ++i)
+        if (sel[i]) picks->push_back(fw::facePoint(regs[i].face));
+    if (picks->empty()) picks->push_back(gp_Pnt(1e9, 1e9, 1e9)); // bewusst nichts gewaehlt
+    return true; // Vorschau folgt beim Loslassen
+}
+
 void MainWindow::showEdgeSelection()
 {
     std::vector<gp_Pnt>* pts = pickPoints();
@@ -2403,6 +2493,7 @@ void MainWindow::beginFeatureEdit(const fw::FeaturePtr& f, bool isNew, const std
     m_view->setDragHandler({
         [this](const Handle(AIS_InteractiveObject)& o) {
             if (pickPoints()) return pickEdge(o);
+            if (regionPicks() && pickRegion(o)) return true;
             if (m_arrowAis.IsNull() || o != m_arrowAis || !m_editDistance) return false;
             auto e = std::dynamic_pointer_cast<fw::ExtrudeFeature>(m_editFeature);
             m_dragStartValue = e ? e->distance() : 0.0;
@@ -2438,6 +2529,9 @@ void MainWindow::previewFeature()
     }
     updateArrow();
     if (pickPoints()) showEdgeSelection();
+    else if (regionPicks()) showRegionSelection();
+    if (!m_edgeBaseAis.IsNull() && regionPicks() && ok)
+        m_panel->setMessage(QString::fromUtf8("Profilbereiche im Grafikfenster anklicken (blau = gewählt). Pfeil ziehen ändert den Abstand."), false);
     if (m_panelDock->height() < m_panel->sizeHint().height())
         resizeDocks({m_panelDock}, {m_panel->sizeHint().height()}, Qt::Vertical);
     m_view->redraw();
@@ -2453,7 +2547,7 @@ void MainWindow::updateArrow()
     if (!e || !e->sketch()) return;
 
     TopoDS_Shape profile;
-    try { profile = e->sketch()->profile(); } catch (...) { return; }
+    try { profile = e->sketch()->profile(e->profilePicks()); } catch (...) { return; }
     if (profile.IsNull()) return;
     GProp_GProps props;
     BRepGProp::SurfaceProperties(profile, props);

@@ -97,6 +97,9 @@ private:
     void cmdExportStep();
     TopoDS_Shape readModelFile(const QString& path);
     std::vector<gp_Pnt>* pickPoints() const;
+    std::vector<gp_Pnt>* regionPicks() const;
+    void showRegionSelection();
+    bool pickRegion(const Handle(AIS_InteractiveObject)& picked);
     // Palette der Aenderungs-Features (Bohrung, Rundung/Fase, Muster, Spiegeln)
     bool buildModifyPanel(const fw::FeaturePtr& f);
     void showEdgeSelection();

@@ -1,6 +1,9 @@
 #include "app/SketchCanvas.h"
 
+#include <QDialog>
+#include <QHBoxLayout>
 #include <QInputDialog>
+#include <QToolButton>
 #include <QLineEdit>
 #include <QMessageBox>
 
@@ -374,78 +377,109 @@ void SketchCanvas::handleConstraintTool(const Hit& h)
     updateStatus();
 }
 
+bool SketchCanvas::dimensionPreview(const QPointF& sp, SkConstraint& c) const
+{
+    if (m_picked.empty()) return false;
+    const auto& P = m_geo.points;
+    const Hit a = m_picked[0];
+    // Zwei Punkte: Lage der Maus bestimmt die Art (wie in Inventor)
+    auto twoPoints = [&](int p, int q) {
+        const double mx = (P[p].x + P[q].x) / 2, my = (P[p].y + P[q].y) / 2;
+        const double dx = P[q].x - P[p].x, dy = P[q].y - P[p].y;
+        const double len = std::hypot(dx, dy);
+        ConType t = ConType::Distance;
+        if (len > 1e-9) {
+            const double ox = sp.x() - mx, oy = sp.y() - my;
+            const double along = std::abs(ox * dx + oy * dy) / len; // Abstand entlang der Strecke
+            const bool slanted = std::abs(dx) > 1e-9 && std::abs(dy) > 1e-9;
+            if (slanted && along <= len / 2) t = ConType::Distance;          // senkrecht daneben: ausgerichtet
+            else if (std::abs(dx) > 1e-9 && (std::abs(oy) > std::abs(ox) || std::abs(dy) < 1e-9)) t = ConType::DistanceX;
+            else if (std::abs(dy) > 1e-9) t = ConType::DistanceY;
+        }
+        c = SkConstraint{};
+        c.type = t; c.a = p; c.b = q;
+    };
+    if (a.kind == Hit::Entity) {
+        const auto& e = m_geo.entities[static_cast<size_t>(a.index)];
+        c = SkConstraint{};
+        if (isRoundEntity(e)) {
+            c.type = e.type == SkType::Arc ? ConType::Radius : ConType::Diameter;
+            c.a = a.index;
+        } else if (m_picked.size() == 2) {
+            c.type = ConType::Angle; c.a = a.index; c.b = m_picked[1].index;
+        } else {
+            twoPoints(e.p0, e.p1);
+        }
+    } else if (m_picked.size() == 2) {
+        twoPoints(a.index, m_picked[1].index);
+    } else {
+        return false;
+    }
+    c.driving = true;
+    c.value = m_geo.measure(c);
+    const QPointF anchor = constraintAnchor(c);
+    c.labelX = sp.x() - anchor.x();
+    c.labelY = sp.y() - anchor.y();
+    return true;
+}
+
 void SketchCanvas::handleDimensionTool(const Hit& h, const QPointF& screen)
 {
     const QPointF sp = toSketch(screen);
-    auto finish = [this, sp](SkConstraint c) {
-        const double measured = m_geo.measure(c);
-        double entered = 0;
-        std::string expr;
-        if (!askValue(QString::fromUtf8("Bemaßung"), QString::fromUtf8(constraintName(c.type)),
-                      ValueEdit::format(std::abs(measured)), entered, expr)) return;
-        c.ref.expr = expr;
-        c.value = (c.type == ConType::DistanceX || c.type == ConType::DistanceY || c.type == ConType::Angle)
-            ? (measured < 0 ? -entered : entered) : entered;
-        // Masszahl dort, wo geklickt wurde
-        c.labelX = 0; c.labelY = 0;
-        m_geo.constraints.push_back(c);
-        const QPointF anchor = constraintAnchor(c);
-        m_geo.constraints.pop_back();
-        c.labelX = sp.x() - anchor.x();
-        c.labelY = sp.y() - anchor.y();
-        tryAdd(c, true);
-    };
-
     if (m_picked.empty()) {
-        if (h.kind == Hit::Entity && isRoundEntity(m_geo.entities[static_cast<size_t>(h.index)])) {
-            const bool arc = m_geo.entities[static_cast<size_t>(h.index)].type == SkType::Arc;
-            finish({arc ? ConType::Radius : ConType::Diameter, h.index});
-            return;
-        }
         if (h.kind == Hit::Entity || h.kind == Hit::Point) {
             m_picked.push_back(h);
             m_selected = h;
-            updateStatus();
-            update();
         }
+        updateStatus();
+        update();
         return;
     }
 
     const Hit a = m_picked[0];
-    // Zweiter Klick
-    if (a.kind == Hit::Entity && h.kind == Hit::Entity && h.index != a.index
-        && m_geo.entities[static_cast<size_t>(h.index)].type == SkType::Line) {
-        m_picked.clear(); m_selected = {};
-        finish({ConType::Angle, a.index, h.index});
-        return;
+    if (m_picked.size() == 1) {
+        const bool aLine = a.kind == Hit::Entity && m_geo.entities[static_cast<size_t>(a.index)].type == SkType::Line;
+        // Zweites Objekt: Linie zu Linie = Winkel, Punkt zu Punkt = Abstand
+        if (aLine && h.kind == Hit::Entity && h.index != a.index
+            && m_geo.entities[static_cast<size_t>(h.index)].type == SkType::Line) {
+            m_picked.push_back(h);
+            m_message = QString::fromUtf8("Klicken, um die Winkelbemaßung zu platzieren");
+            updateStatus();
+            update();
+            return;
+        }
+        if (a.kind == Hit::Point && h.kind == Hit::Point && h.index != a.index) {
+            m_picked.push_back(h);
+            m_message = QString::fromUtf8("Klicken, um die Bemaßung zu platzieren (über/unter = horizontal, links/rechts = vertikal)");
+            updateStatus();
+            update();
+            return;
+        }
     }
-    if (a.kind == Hit::Point && h.kind == Hit::Point && h.index != a.index) {
-        m_picked.push_back(h);
-        m_message = QString::fromUtf8("Klicken, um die Bemaßung zu platzieren (über/unter = horizontal, links/rechts = vertikal)");
-        updateStatus();
-        return;
-    }
-    if (a.kind == Hit::Entity && h.kind == Hit::None) {
-        const auto& e = m_geo.entities[static_cast<size_t>(a.index)];
-        m_picked.clear(); m_selected = {};
-        finish({ConType::Distance, e.p0, e.p1});
-        return;
-    }
-    if (m_picked.size() == 2 && h.kind == Hit::None) {
-        const int p = m_picked[0].index, q = m_picked[1].index;
-        m_picked.clear(); m_selected = {};
-        const auto& P = m_geo.points;
-        const double mx = (P[p].x + P[q].x) / 2, my = (P[p].y + P[q].y) / 2;
-        const double ox = std::abs(sp.x() - mx), oy = std::abs(sp.y() - my);
-        const double dx = std::abs(P[q].x - P[p].x), dy = std::abs(P[q].y - P[p].y);
-        ConType t = ConType::Distance;
-        if (dx > 1e-9 && (oy > ox || dy < 1e-9)) t = ConType::DistanceX;
-        else if (dy > 1e-9) t = ConType::DistanceY;
-        finish({t, p, q});
-        return;
-    }
+
+    SkConstraint c;
+    const bool ok = dimensionPreview(sp, c);
     m_picked.clear();
     m_selected = {};
+    if (!ok) { update(); return; }
+
+    // Masszahl bleibt sichtbar, waehrend der Wert eingegeben wird
+    m_placedDim = c;
+    m_placingDim = true;
+    update();
+    const double measured = m_geo.measure(c);
+    double entered = 0;
+    std::string expr;
+    const QPointF labelAt = toScreen(sp.x(), sp.y());
+    const bool accepted = askValue(QString::fromUtf8("Bemaßung"), QString::fromUtf8(constraintName(c.type)),
+                                   ValueEdit::format(std::abs(measured)), entered, expr, &labelAt);
+    m_placingDim = false;
+    if (!accepted) { update(); return; }
+    c.ref.expr = expr;
+    c.value = (c.type == ConType::DistanceX || c.type == ConType::DistanceY || c.type == ConType::Angle)
+        ? (measured < 0 ? -entered : entered) : entered;
+    tryAdd(c, true);
+    updateStatus();
     update();
 }
 
@@ -471,13 +505,39 @@ QPointF SketchCanvas::constraintAnchor(const SkConstraint& c) const
     }
 }
 
-bool SketchCanvas::askValue(const QString& title, const QString& label, const QString& initial, double& value, std::string& expr)
+bool SketchCanvas::askValue(const QString& title, const QString& label, const QString& initial, double& value, std::string& expr,
+                            const QPointF* at)
 {
     QString text = initial;
     for (;;) {
         bool ok = false;
-        text = QInputDialog::getText(this, title,
-            label + QString::fromUtf8(":\n(Zahl oder Gleichung, z. B. d0 * 2)"), QLineEdit::Normal, text, &ok);
+        if (at) {
+            // Kleines Eingabefeld direkt an der Masszahl; Enter uebernimmt, Esc bricht ab
+            QDialog dlg(this, Qt::Popup | Qt::FramelessWindowHint);
+            dlg.setStyleSheet("QDialog { background: white; border: 1px solid #2f6fd0; }");
+            auto* lay = new QHBoxLayout(&dlg);
+            lay->setContentsMargins(3, 3, 3, 3);
+            lay->setSpacing(3);
+            auto* edit = new QLineEdit(text);
+            edit->setMinimumWidth(110);
+            edit->setToolTip(label + QString::fromUtf8(": Zahl oder Gleichung, z. B. d0 * 2"));
+            auto* okButton = new QToolButton;
+            okButton->setText(QString::fromUtf8("✓"));
+            okButton->setToolTip("OK (Enter)");
+            lay->addWidget(edit);
+            lay->addWidget(okButton);
+            connect(edit, &QLineEdit::returnPressed, &dlg, &QDialog::accept);
+            connect(okButton, &QToolButton::clicked, &dlg, &QDialog::accept);
+            dlg.adjustSize();
+            dlg.move(mapToGlobal(at->toPoint()) - QPoint(dlg.width() / 2, dlg.height() / 2));
+            edit->selectAll();
+            edit->setFocus();
+            ok = dlg.exec() == QDialog::Accepted;
+            text = edit->text();
+        } else {
+            text = QInputDialog::getText(this, title,
+                label + QString::fromUtf8(":\n(Zahl oder Gleichung, z. B. d0 * 2)"), QLineEdit::Normal, text, &ok);
+        }
         if (!ok) return false;
         const std::string st = text.trimmed().toStdString();
         if (fw::isPlainNumber(st)) {
@@ -637,15 +697,21 @@ void SketchCanvas::paintEvent(QPaintEvent*)
         }
     }
 
-    // Bemassungen
+    // Bemassungen (die gerade entstehende haengt an der Maus und wird kurz mitgezeichnet)
     QFont dimFont = font();
     dimFont.setPointSizeF(10);
+    SkConstraint previewDim;
+    bool hasPreviewDim = m_placingDim;
+    if (m_placingDim) previewDim = m_placedDim;
+    else if (m_tool == Tool::Dimension && !m_picked.empty()) hasPreviewDim = dimensionPreview(toSketch(m_mouse), previewDim);
+    if (hasPreviewDim) m_geo.constraints.push_back(previewDim);
+    const size_t previewIndex = hasPreviewDim ? m_geo.constraints.size() - 1 : static_cast<size_t>(-1);
     for (size_t i = 0; i < m_geo.constraints.size(); ++i) {
         const auto& c = m_geo.constraints[i];
         if (!isDimension(c.type)) continue;
         const bool sel = (m_selected.kind == Hit::Constraint && m_selected.index == static_cast<int>(i))
             || (m_hover.kind == Hit::Constraint && m_hover.index == static_cast<int>(i));
-        const QColor col = sel ? kSelectColor : kDimColor;
+        const QColor col = i == previewIndex ? kHoverColor : sel ? kSelectColor : kDimColor;
         p.setPen(QPen(col, 1));
         const QPointF anchor = constraintAnchor(c);
         const QPointF label(anchor.x() + c.labelX, anchor.y() + c.labelY);
@@ -696,6 +762,7 @@ void SketchCanvas::paintEvent(QPaintEvent*)
         p.setPen(col);
         p.drawText(r, Qt::AlignCenter, dimensionText(c));
     }
+    if (hasPreviewDim) m_geo.constraints.pop_back();
 
     // Vorschau des laufenden Werkzeugs (getippte Werte der dynamischen Eingabe gelten)
     p.setPen(QPen(kHoverColor, 1.5, Qt::DashLine));
@@ -1320,8 +1387,9 @@ void SketchCanvas::editDimension(int index)
     std::string expr;
     const QString label = QString::fromUtf8(constraintName(c.type)) +
         (c.ref.param.empty() ? QString() : QString(" (%1)").arg(QString::fromStdString(c.ref.param)));
+    const QPointF at = dimensionTextRect(index).center();
     if (!askValue(QString::fromUtf8("Bemaßung bearbeiten"), label,
-                  c.ref.expr.empty() ? ValueEdit::format(std::abs(c.value)) : QString::fromStdString(c.ref.expr), v, expr))
+                  c.ref.expr.empty() ? ValueEdit::format(std::abs(c.value)) : QString::fromStdString(c.ref.expr), v, expr, &at))
         return;
     const double old = c.value;
     const std::string oldExpr = c.ref.expr;

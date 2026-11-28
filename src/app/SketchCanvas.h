@@ -60,7 +60,9 @@ protected:
 
 private:
     // Fragt Wert oder Gleichung ab; false bei Abbruch
-    bool askValue(const QString& title, const QString& label, const QString& initial, double& value, std::string& expr);
+    // at: Bildschirmposition fuer das kleine Eingabefeld direkt an der Masszahl (wie in Inventor)
+    bool askValue(const QString& title, const QString& label, const QString& initial, double& value, std::string& expr,
+                  const QPointF* at = nullptr);
     bool evaluate(const QString& text, double& value, QString& error) const;
     void nameDimension(fw::SkConstraint& c);
     Lookup m_docLookup;
@@ -83,6 +85,8 @@ private:
     void cancelOperation();
     void handleConstraintTool(const Hit& h);
     void handleDimensionTool(const Hit& h, const QPointF& screen);
+    // Bemassung aus der bisherigen Auswahl, Masszahl an der Sketch-Position sp
+    bool dimensionPreview(const QPointF& sp, fw::SkConstraint& out) const;
     QPointF constraintAnchor(const fw::SkConstraint& c) const;
     QRectF dimensionTextRect(int index, QPainter* p = nullptr) const;
     QString dimensionText(const fw::SkConstraint& c) const;
@@ -121,6 +125,8 @@ private:
 
     // Laufende Eingabe
     std::vector<int> m_pending;   // bereits gewaehlte Punkte (Zeichenwerkzeuge)
+    bool m_placingDim = false;      // Bemassung wird gerade eingetragen (Wertabfrage offen)
+    fw::SkConstraint m_placedDim;
     std::vector<Hit> m_picked;    // bereits gewaehlte Objekte (Abhaengigkeiten/Bemassung)
     QPointF m_mouse;
     Hit m_hover;

@@ -328,6 +328,7 @@ std::string PartDocument::toText(bool embedImports) const
               << ";symmetric=" << (e->symmetric() ? 1 : 0) << ";suppressed=" << sup;
             if (!e->distanceRef().param.empty()) o << ";param=" << e->distanceRef().param;
             if (!e->distanceRef().expr.empty()) o << ";expr=" << esc(e->distanceRef().expr);
+            if (!e->profilePicks().empty()) o << ";regions=" << pointList(e->profilePicks());
             o << '\n';
         } else if (auto r = std::dynamic_pointer_cast<RevolveFeature>(f)) {
             o << "revolve = " << safeName(r->name()) << ";sketch=" << safeName(r->sketch()->name())
@@ -335,6 +336,7 @@ std::string PartDocument::toText(bool embedImports) const
               << ";op=" << static_cast<int>(r->operation()) << ";suppressed=" << sup;
             if (!r->angleRef().param.empty()) o << ";param=" << r->angleRef().param;
             if (!r->angleRef().expr.empty()) o << ";expr=" << esc(r->angleRef().expr);
+            if (!r->profilePicks().empty()) o << ";regions=" << pointList(r->profilePicks());
             o << '\n';
         } else {
             writeModifyFeature(o, f, embedImports);
@@ -470,6 +472,16 @@ bool PartDocument::fromText(const std::string& text, std::string* error)
                 if (a.count("expr")) ref.expr = unesc(a.at("expr"));
                 if (auto e = std::dynamic_pointer_cast<ExtrudeFeature>(f)) e->distanceRef() = ref;
                 if (auto r = std::dynamic_pointer_cast<RevolveFeature>(f)) r->angleRef() = ref;
+                if (a.count("regions") && !a.at("regions").empty()) {
+                    std::vector<gp_Pnt> picks;
+                    for (const auto& pt : split(a.at("regions"), '/')) {
+                        const auto v = split(pt, ',');
+                        if (v.size() != 3) throw std::invalid_argument("Ungueltiger Profilbereich");
+                        picks.emplace_back(num(v[0]), num(v[1]), num(v[2]));
+                    }
+                    if (auto e = std::dynamic_pointer_cast<ExtrudeFeature>(f)) e->setProfilePicks(picks);
+                    if (auto r = std::dynamic_pointer_cast<RevolveFeature>(f)) r->setProfilePicks(picks);
+                }
                 features.push_back(f);
                 featuresByName[f->name()] = f;
             } else if (key == "hole" || key == "fillet" || key == "chamfer" || key == "pattern" || key == "mirror" || key == "shell" || key == "import") {

@@ -31,7 +31,13 @@ public:
     const ParamRef& distanceRef() const { return m_distRef; }
     double* distancePtr() { return &m_distance; }
 
+    // Gewaehlte Profilbereiche (Punkte in der Skizzenebene); leer = Standardauswahl
+    const std::vector<gp_Pnt>& profilePicks() const { return m_picks; }
+    void setProfilePicks(std::vector<gp_Pnt> p) { m_picks = std::move(p); }
+    std::vector<gp_Pnt>& profilePicksRef() { return m_picks; }
+
 private:
+    std::vector<gp_Pnt> m_picks;
     ParamRef m_distRef;
     SketchPtr m_sketch;
     double m_distance;
@@ -66,7 +72,13 @@ public:
     const ParamRef& angleRef() const { return m_angleRef; }
     double* anglePtr() { return &m_angle; }
 
+    // Gewaehlte Profilbereiche (Punkte in der Skizzenebene); leer = Standardauswahl
+    const std::vector<gp_Pnt>& profilePicks() const { return m_picks; }
+    void setProfilePicks(std::vector<gp_Pnt> p) { m_picks = std::move(p); }
+    std::vector<gp_Pnt>& profilePicksRef() { return m_picks; }
+
 private:
+    std::vector<gp_Pnt> m_picks;
     ParamRef m_angleRef;
     SketchPtr m_sketch;
     RevolveAxis m_axis;
