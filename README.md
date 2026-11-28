@@ -54,6 +54,8 @@ Technik: C++17, Qt 6 (Oberfläche), OpenCascade (CAD-Kernel), Clipper (2D-Polygo
   Geschwindigkeit, Fluss oder eigener G-Code ab einer Höhe; direkt aus der Schichtvorschau einfügbar
 - Automatische Stützen (überall oder nur vom Druckbett) mit Überhangwinkel, Dichte und Abständen
 - Druck-Modifikatoren (Quader/Zylinder, im Bauteil gespeichert): Infill-Zonen mit eigener Dichte, Stützen erzwingen, Stützen sperren
+- Zu große Bauteile für den Druck teilen (3D-Druck › Teilen): Schnitte automatisch nach Bauraum oder von Hand, Verbindung mit Passstiften (auch als Druckteil), Zapfen, Schwalbenschwanz oder Schraube mit Mutterfalle; Explosionsansicht, jedes Teil einzeln slicen oder alle Teile auf einmal als G-Code speichern
+- Skizze: Erstellungsarten wie in Inventor (Rechteck zwei/drei Punkte und vom Mittelpunkt, Kreis tangential, Bogen drei Punkte/tangential, Polygon ein-/umschrieben), Bemaßung hängt an der Maus, Profilbereiche bei verzweigten Skizzen anklickbar
 - Brim, Gitter- oder Linien-Füllung, Z-Naht hinten, eigene Temperaturen für die erste Schicht
 - Schätzung von Druckzeit, Filamentlänge, Gewicht und Kosten
 - Farbige Schichtvorschau auf dem Druckbett, Druckzeit- und Filamentschätzung

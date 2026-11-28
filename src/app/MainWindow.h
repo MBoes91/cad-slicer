@@ -118,6 +118,14 @@ private:
     void cmdAddModifier(fw::PrintModifier::Role role);
     void cmdEditModifier(int index);
     void displayModifiers(const gp_Vec& shift);
+    // Teilen fuer den Druck
+    void cmdSplit();
+    void cmdSaveAllGcode();
+    bool ensureSplit();
+    void showSplitView();
+    void clearSplitView();
+    void refreshPartCombo();
+    TopoDS_Shape printBody();
     void setPrintPreview(bool on);
     void startSlice(std::function<void()> then);
     void sliceFinished();
@@ -218,6 +226,11 @@ private:
     std::vector<Handle(AIS_Shape)> m_sketchAis;
     Handle(AIS_Shape) m_bedAis;
     std::vector<Handle(AIS_Shape)> m_modifierAis;
+    fw::SplitResult m_split;
+    std::string m_splitKey;
+    int m_activePart = 0;
+    std::vector<Handle(AIS_Shape)> m_splitAis;
+    class QComboBox* m_partCombo = nullptr;
     Handle(ToolpathPreview) m_previewAis;
     bool m_printPreview = false;
     std::map<QTreeWidgetItem*, fw::FeaturePtr> m_itemFeature;

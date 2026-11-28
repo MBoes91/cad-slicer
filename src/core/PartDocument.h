@@ -4,6 +4,7 @@
 #include "core/ModifyFeatures.h"
 #include "core/ImportFeature.h"
 #include "core/PrintModifier.h"
+#include "core/Split.h"
 
 #include <string>
 #include <vector>
@@ -33,6 +34,10 @@ public:
 
     std::vector<PrintModifier>& modifiers() { return m_modifiers; }
     const std::vector<PrintModifier>& modifiers() const { return m_modifiers; }
+
+    // Aufteilung fuer den Druck (nur 3D-Druck-Umgebung, aendert den Koerper nicht)
+    SplitPlan& splitPlan() { return m_split; }
+    const SplitPlan& splitPlan() const { return m_split; }
 
     void addFeature(FeaturePtr f);
     // Entfernt ein Feature. Features, die noch von anderen benutzt werden
@@ -105,6 +110,7 @@ private:
     std::vector<UserParameter> m_userParams;
     std::vector<FeaturePtr> m_features;
     std::vector<PrintModifier> m_modifiers;
+    SplitPlan m_split;
     int m_endOfPart = -1; // -1: ganz am Ende
     TopoDS_Shape m_body;
     FeaturePtr m_errorFeature;

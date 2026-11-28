@@ -284,6 +284,7 @@ void PartDocument::clear(std::string name)
     m_name = std::move(name);
     m_features.clear();
     m_modifiers.clear();
+    m_split = SplitPlan{};
     m_userParams.clear();
     m_endOfPart = -1;
     m_body.Nullify();
@@ -346,6 +347,7 @@ std::string PartDocument::toText(bool embedImports) const
         o << "modifier = " << safeName(m.name) << ";role=" << static_cast<int>(m.role) << ";shape=" << static_cast<int>(m.shape)
           << ";c=" << m.cx << ',' << m.cy << ',' << m.cz << ";s=" << m.sx << ',' << m.sy << ',' << m.sz
           << ";infill=" << m.infillDensity << ";pattern=" << m.infillPattern << '\n';
+    if (!m_split.empty()) o << "split = " << splitToText(m_split) << '\n';
     for (const auto& u : m_userParams)
         o << "uparam = " << u.name << ";expr=" << esc(u.expr) << ";comment=" << esc(u.comment) << '\n';
     if (m_endOfPart >= 0 && m_endOfPart < static_cast<int>(m_features.size())) o << "endofpart = " << m_endOfPart << '\n';
@@ -359,6 +361,7 @@ bool PartDocument::fromText(const std::string& text, std::string* error)
     std::map<std::string, SketchPtr> sketchesByName;
     std::map<std::string, FeaturePtr> featuresByName;
     std::vector<PrintModifier> modifiers;
+    SplitPlan splitPlan;
     SketchPtr current;
     int endOfPart = -1;
     std::vector<UserParameter> userParams;
@@ -388,6 +391,8 @@ bool PartDocument::fromText(const std::string& text, std::string* error)
                 u.expr = unesc(need(a, "expr"));
                 if (a.count("comment")) u.comment = unesc(a.at("comment"));
                 userParams.push_back(u);
+            } else if (key == "split") {
+                if (!splitFromText(val, splitPlan)) throw std::invalid_argument("Ungueltige Aufteilung");
             } else if (key == "endofpart") {
                 endOfPart = static_cast<int>(num(val));
             } else if (key == "sketch") {
@@ -581,6 +586,7 @@ bool PartDocument::fromText(const std::string& text, std::string* error)
     clear(name);
     m_features = std::move(features);
     m_modifiers = std::move(modifiers);
+    m_split = splitPlan;
     setEndOfPart(endOfPart);
     m_userParams = std::move(userParams);
     return true;

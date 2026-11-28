@@ -38,6 +38,9 @@
 #include <QButtonGroup>
 #include <QAbstractButton>
 #include <QComboBox>
+#include <BRepBuilderAPI_Transform.hxx>
+#include <QDir>
+#include <QProgressDialog>
 #include <QFormLayout>
 #include <QDoubleSpinBox>
 #include <QDockWidget>
@@ -84,7 +87,7 @@ namespace {
 enum class Icon { Line, Arc, Dim, Finish, Cancel, Construction, Select, Pause, Sketch, Extrude, Revolve, Hole, Export, Home, Fit, Top, Front, Right, Slice, Save, Settings, Preview, Rect, Circle,
                   Pan, Zoom, Orbit, PrevView, NewDoc, OpenDoc, Disk, Measure, Update, PrintEnv, Shaded, Edges, Wire, Persp, EndOfPart, Close,
                   Fillet, Chamfer, RectPattern, CircPattern, Mirror, Point, Shell, Polygon, Slot, SketchFillet,
-                  Rect3, RectCenter, Rect3Center, CircleTangent, Arc3, ArcTangent, PolygonOut };
+                  Rect3, RectCenter, Rect3Center, CircleTangent, Arc3, ArcTangent, PolygonOut, Split, SaveAll };
 
 QIcon makeIcon(Icon kind)
 {
@@ -316,6 +319,21 @@ QIcon makeIcon(Icon kind)
         p.setPen(QPen(blue, 3)); p.drawPolygon(poly);
         break;
     }
+    case Icon::Split:
+        p.setPen(QPen(dark, 2)); p.setBrush(QColor(120, 160, 215));
+        p.drawRect(6, 20, 22, 26);
+        p.setBrush(QColor(235, 170, 90));
+        p.drawRect(36, 20, 22, 26);
+        p.setPen(QPen(orange, 2, Qt::DashLine)); p.drawLine(32, 8, 32, 58);
+        p.setPen(QPen(dark, 2)); p.setBrush(Qt::white);
+        p.drawEllipse(QPointF(28, 33), 3, 3); p.drawEllipse(QPointF(36, 33), 3, 3);
+        break;
+    case Icon::SaveAll:
+        p.setPen(QPen(dark, 2)); p.setBrush(QColor(80, 120, 190));
+        p.drawRect(18, 6, 36, 36);
+        p.drawRect(10, 18, 36, 36);
+        p.setBrush(Qt::white); p.drawRect(18, 20, 20, 12);
+        break;
     case Icon::Rect3: {
         p.setPen(QPen(blue, 4));
         const QPolygonF r({{8, 40}, {34, 14}, {56, 36}, {30, 62}});
@@ -726,6 +744,7 @@ void MainWindow::enterPrintEnvironment()
     setPageShown(m_printPage, true);
     m_ribbon->setCurrentWidget(m_printPage);
     statusBar()->showMessage(QString::fromUtf8("3D-Druck: Profil wählen, Modifikatoren setzen, slicen · \"3D-Druck beenden\" kehrt zum Modell zurück"), 8000);
+    showSplitView();
 }
 
 void MainWindow::exitPrintEnvironment()
@@ -735,6 +754,9 @@ void MainWindow::exitPrintEnvironment()
     if (m_printPreview) setPrintPreview(false);
     setPageShown(m_printPage, false);
     m_ribbon->setCurrentWidget(m_modelTabPage);
+    clearSplitView();
+    displayModel();
+    m_view->redraw();
 }
 
 void MainWindow::setVisualStyle(int style)
@@ -1112,7 +1134,38 @@ void MainWindow::buildRibbon()
     m_profileLabel->setStyleSheet("font-size: 11px;");
     auto* printerPanel = makePanel(QString::fromUtf8("Creality Ender 3 V2"), {aSettings, aSlice});
     static_cast<QHBoxLayout*>(static_cast<QVBoxLayout*>(printerPanel->layout())->itemAt(0)->layout())->insertWidget(0, m_profileLabel);
-    m_printPage = makeRibbonPage({printerPanel,
+    auto* aSplit = act("Teilen", Icon::Split, {}, [this] { cmdSplit(); });
+    aSplit->setToolTip(QString::fromUtf8("Zu großes Bauteil für den Bauraum teilen, mit Passstiften, Zapfen, Schwalbenschwanz oder Schraube"));
+    auto* aSaveAll = act("Alle Teile\nspeichern", Icon::SaveAll, {}, [this] { cmdSaveAllGcode(); });
+    aSaveAll->setToolTip(QString::fromUtf8("Jedes Teil slicen und als eigene G-Code-Datei speichern"));
+    auto* splitPanel = makePanel("Teilen", {aSplit, aSaveAll});
+    {
+        m_partCombo = new QComboBox;
+        m_partCombo->setMinimumWidth(200);
+        m_partCombo->setToolTip(QString::fromUtf8("Teil, das geslict und gespeichert wird"));
+        connect(m_partCombo, &QComboBox::activated, this, [this](int i) {
+            if (i == m_activePart) return;
+            m_activePart = i;
+            m_slice = fw::SliceResult{};
+            const bool wasPreview = m_printPreview;
+            if (m_printPreview) setPrintPreview(false);
+            showSplitView();
+            if (wasPreview) startSlice({});
+        });
+        auto* box = new QWidget;
+        auto* bl = new QVBoxLayout(box);
+        bl->setContentsMargins(4, 6, 4, 0);
+        auto* t = new QLabel("Druckteil:");
+        t->setStyleSheet("font-size: 11px;");
+        bl->addWidget(t);
+        bl->addWidget(m_partCombo);
+        bl->addStretch();
+        static_cast<QHBoxLayout*>(static_cast<QVBoxLayout*>(splitPanel->layout())->itemAt(0)->layout())->insertWidget(1, box);
+    }
+    refreshPartCombo();
+    m_docActions.push_back(aSplit);
+    m_docActions.push_back(aSaveAll);
+    m_printPage = makeRibbonPage({printerPanel, splitPanel,
                                   makePanel("Modifikatoren", {aZone, aEnforce, aBlock}),
                                   makePanel("Ergebnis", {m_previewAction, aSave}), layerPanel,
                                   makePanel("Beenden", {aExitPrint})});
@@ -1422,6 +1475,7 @@ void MainWindow::rebuild(bool fit)
     refreshBrowser();
     if (m_view->context().IsNull()) return;
     displayModel();
+    if (m_inPrintEnv) showSplitView();
     if (fit) m_view->fitAll();
     else m_view->redraw();
 
@@ -2782,7 +2836,8 @@ void MainWindow::startSlice(std::function<void()> then)
     m_cancelButton->show();
     m_progressTimer->start(100);
 
-    const TopoDS_Shape body = m_doc.body();
+    const TopoDS_Shape body = printBody();
+    if (body.IsNull()) return;
     const fw::PrinterProfile profile = m_profile;
     const std::vector<fw::PrintModifier> modifiers = m_doc.modifiers();
     auto* progress = &m_sliceProgress;
@@ -2842,6 +2897,8 @@ void MainWindow::cmdSaveGcode()
         return;
     }
     QString base = m_filePath.isEmpty() ? QString::fromStdString(m_doc.name()) : QFileInfo(m_filePath).completeBaseName();
+    if (m_split.ok && m_activePart >= 0 && m_activePart < static_cast<int>(m_split.parts.size()) && !m_doc.splitPlan().empty())
+        base += "_" + QString::fromStdString(m_split.parts[static_cast<size_t>(m_activePart)].name).section(' ', 0, 1).replace(' ', '-').toLower();
     const QString path = QFileDialog::getSaveFileName(this, "G-Code speichern", base + ".gcode", "G-Code (*.gcode)");
     if (path.isEmpty()) return;
     QFile file(path);
@@ -2883,10 +2940,11 @@ void MainWindow::setPrintPreview(bool on)
             m_bedAis = new AIS_Shape(BRepPrimAPI_MakeBox(gp_Pnt(0, 0, -1.0), m_profile.bedX, m_profile.bedY, 1.0).Shape());
             m_bedAis->SetColor(Quantity_Color(0.20, 0.22, 0.25, Quantity_TOC_sRGB));
         }
+        clearSplitView();
         if (!m_bodyAis.IsNull()) ctx->Erase(m_bodyAis, false);
         for (auto& s : m_sketchAis) ctx->Erase(s, false);
         ctx->Display(m_bedAis, AIS_Shaded, -1, false);
-        displayModifiers(fw::bedPlacement(m_doc.body(), m_profile));
+        displayModifiers(fw::bedPlacement(printBody(), m_profile));
         m_layerSlider->blockSignals(true);
         m_layerSlider->setRange(1, static_cast<int>(m_slice.layers.size()));
         m_layerSlider->setValue(static_cast<int>(m_slice.layers.size()));
@@ -2901,6 +2959,7 @@ void MainWindow::setPrintPreview(bool on)
         if (!m_bodyAis.IsNull()) ctx->Display(m_bodyAis, m_visualStyle == 2 ? AIS_WireFrame : AIS_Shaded, 0, false);
         for (auto& s : m_sketchAis) ctx->Display(s, AIS_WireFrame, -1, false);
         m_layerLabel->setText("Schicht: –");
+        showSplitView();
         m_view->fitAll();
     }
 }
@@ -3268,4 +3327,206 @@ void MainWindow::cmdEditModifier(int index)
     if (dlg.exec() != QDialog::Accepted) return;
     m_doc.modifiers()[static_cast<size_t>(index)] = dlg.modifier();
     rebuild();
+}
+
+// --- Teilen fuer den Druck -------------------------------------------------------
+
+bool MainWindow::ensureSplit()
+{
+    const fw::SplitPlan& plan = m_doc.splitPlan();
+    if (plan.empty() || m_doc.body().IsNull()) {
+        if (!m_splitKey.empty()) {
+            m_split = fw::SplitResult{};
+            m_splitKey.clear();
+            m_activePart = 0;
+            refreshPartCombo();
+        }
+        return false;
+    }
+    const std::string key = std::to_string(m_generation) + "|" + fw::splitToText(plan);
+    if (key != m_splitKey) {
+        QApplication::setOverrideCursor(Qt::WaitCursor);
+        statusBar()->showMessage("Teile werden berechnet ...");
+        QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+        m_split = fw::splitBody(m_doc.body(), plan);
+        QApplication::restoreOverrideCursor();
+        m_splitKey = key;
+        if (m_activePart >= static_cast<int>(m_split.parts.size())) m_activePart = 0;
+        refreshPartCombo();
+        if (!m_split.ok) {
+            statusBar()->showMessage(QString::fromUtf8("Teilen fehlgeschlagen: %1").arg(QString::fromStdString(m_split.error)), 8000);
+        } else {
+            QString msg = QString::fromUtf8("%1 Teile, %2 Verbinder (%3)").arg(m_split.parts.size()).arg(m_split.connectors)
+                              .arg(QString::fromUtf8(fw::connectorName(plan.connector)));
+            for (const auto& w : m_split.warnings) msg += " · " + QString::fromStdString(w);
+            statusBar()->showMessage(msg, 8000);
+        }
+    }
+    return m_split.ok;
+}
+
+TopoDS_Shape MainWindow::printBody()
+{
+    if (ensureSplit() && m_activePart >= 0 && m_activePart < static_cast<int>(m_split.parts.size()))
+        return m_split.parts[static_cast<size_t>(m_activePart)].shape;
+    if (!m_doc.splitPlan().empty()) {
+        QMessageBox::warning(this, "Teilen", QString::fromUtf8("Das Bauteil konnte nicht geteilt werden: %1")
+                                                 .arg(QString::fromStdString(m_split.error)));
+        return {};
+    }
+    return m_doc.body();
+}
+
+void MainWindow::refreshPartCombo()
+{
+    if (!m_partCombo) return;
+    m_partCombo->blockSignals(true);
+    m_partCombo->clear();
+    if (m_split.ok && !m_doc.splitPlan().empty()) {
+        for (const auto& p : m_split.parts) {
+            Bnd_Box b;
+            BRepBndLib::Add(p.shape, b);
+            double x0, y0, z0, x1, y1, z1;
+            b.Get(x0, y0, z0, x1, y1, z1);
+            const bool fits = x1 - x0 <= m_profile.bedX && y1 - y0 <= m_profile.bedY && z1 - z0 <= m_profile.maxZ;
+            m_partCombo->addItem(QString::fromUtf8("%1  (%2 × %3 × %4)%5").arg(QString::fromStdString(p.name))
+                                     .arg(x1 - x0, 0, 'f', 0).arg(y1 - y0, 0, 'f', 0).arg(z1 - z0, 0, 'f', 0)
+                                     .arg(fits ? "" : QString::fromUtf8("  ⚠ zu groß")));
+        }
+        m_partCombo->setCurrentIndex(m_activePart);
+        m_partCombo->setEnabled(true);
+    } else {
+        m_partCombo->addItem("Ganzes Bauteil");
+        m_partCombo->setEnabled(false);
+    }
+    m_partCombo->blockSignals(false);
+}
+
+void MainWindow::clearSplitView()
+{
+    const auto& ctx = m_view->context();
+    if (ctx.IsNull()) return;
+    for (auto& a : m_splitAis) ctx->Remove(a, false);
+    m_splitAis.clear();
+}
+
+void MainWindow::showSplitView()
+{
+    const auto& ctx = m_view->context();
+    if (ctx.IsNull()) return;
+    clearSplitView();
+    if (!m_inPrintEnv || m_printPreview) return;
+    if (!ensureSplit()) {
+        if (!m_bodyAis.IsNull() && !ctx->IsDisplayed(m_bodyAis))
+            ctx->Display(m_bodyAis, m_visualStyle == 2 ? AIS_WireFrame : AIS_Shaded, 0, false);
+        m_view->redraw();
+        return;
+    }
+    if (!m_bodyAis.IsNull()) ctx->Erase(m_bodyAis, false);
+    for (auto& s : m_sketchAis) ctx->Erase(s, false);
+
+    // Explosionsansicht: Teile entlang der Schnittachsen auseinandergezogen
+    Bnd_Box box;
+    BRepBndLib::Add(m_doc.body(), box);
+    const double gap = box.IsVoid() ? 20.0 : 10.0 + 0.12 * std::sqrt(box.SquareExtent());
+    static const Quantity_Color colors[] = {
+        Quantity_Color(0.45, 0.62, 0.85, Quantity_TOC_sRGB), Quantity_Color(0.92, 0.66, 0.35, Quantity_TOC_sRGB),
+        Quantity_Color(0.50, 0.78, 0.55, Quantity_TOC_sRGB), Quantity_Color(0.85, 0.52, 0.60, Quantity_TOC_sRGB),
+        Quantity_Color(0.70, 0.60, 0.88, Quantity_TOC_sRGB), Quantity_Color(0.85, 0.80, 0.40, Quantity_TOC_sRGB)};
+    for (size_t i = 0; i < m_split.parts.size(); ++i) {
+        const auto& part = m_split.parts[i];
+        gp_Trsf t;
+        t.SetTranslation(part.explode * gap);
+        Handle(AIS_Shape) a = new AIS_Shape(BRepBuilderAPI_Transform(part.shape, t, true).Shape());
+        a->SetColor(part.pins ? Quantity_Color(0.55, 0.55, 0.58, Quantity_TOC_sRGB) : colors[i % 6]);
+        a->SetMaterial(Graphic3d_NameOfMaterial_Plastified);
+        a->Attributes()->SetFaceBoundaryDraw(true);
+        a->Attributes()->SetFaceBoundaryAspect(new Prs3d_LineAspect(Quantity_NOC_GRAY20, Aspect_TOL_SOLID, 1.0));
+        if (static_cast<int>(i) != m_activePart) a->SetTransparency(0.55);
+        ctx->Display(a, AIS_Shaded, -1, false);
+        ctx->Deactivate(a);
+        m_splitAis.push_back(a);
+    }
+    m_view->redraw();
+}
+
+void MainWindow::cmdSplit()
+{
+    if (m_doc.body().IsNull()) {
+        QMessageBox::information(this, "Teilen", QString::fromUtf8("Bitte zuerst einen Körper modellieren."));
+        return;
+    }
+    enterPrintEnvironment();
+    if (m_printPreview) setPrintPreview(false);
+    Bnd_Box b;
+    BRepBndLib::Add(m_doc.body(), b);
+    double lo[3], hi[3];
+    b.Get(lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]);
+    const double size[3] = {hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]};
+    const double bed[3] = {m_profile.bedX, m_profile.bedY, m_profile.maxZ};
+    fw::SplitPlan plan = m_doc.splitPlan();
+    if (plan.empty()) plan.cuts = fw::autoCuts(m_doc.body(), bed[0], bed[1], bed[2], plan);
+    const fw::SplitPlan before = m_doc.splitPlan();
+    const TopoDS_Shape body = m_doc.body();
+    SplitDialog dlg(plan, size, lo, bed, [body, bed](const fw::SplitPlan& p) { return fw::autoCuts(body, bed[0], bed[1], bed[2], p); }, this);
+    connect(&dlg, &SplitDialog::applyRequested, this, [this](const fw::SplitPlan& p) {
+        m_doc.splitPlan() = p;
+        m_activePart = 0;
+        showSplitView();
+        m_view->fitAll();
+    });
+    const bool ok = dlg.exec() == QDialog::Accepted;
+    m_doc.splitPlan() = before; // Vorschau zuruecknehmen, Uebernahme laeuft ueber rebuild (Rueckgaengig)
+    if (ok) {
+        m_doc.splitPlan() = dlg.removeRequested() ? fw::SplitPlan{} : dlg.plan();
+        if (dlg.removeRequested()) m_doc.splitPlan().cuts.clear();
+        m_activePart = 0;
+        rebuild(true);
+    } else {
+        showSplitView();
+    }
+}
+
+void MainWindow::cmdSaveAllGcode()
+{
+    if (!ensureSplit()) {
+        QMessageBox::information(this, "Alle Teile speichern",
+            QString::fromUtf8("Das Bauteil ist nicht geteilt. Über \"Teilen\" Schnitte festlegen oder \"G-Code speichern\" verwenden."));
+        return;
+    }
+    const QString dir = QFileDialog::getExistingDirectory(this, QString::fromUtf8("Ordner für die G-Code-Dateien"),
+        m_filePath.isEmpty() ? QString() : QFileInfo(m_filePath).absolutePath());
+    if (dir.isEmpty()) return;
+    const QString base = m_filePath.isEmpty() ? QString::fromStdString(m_doc.name()) : QFileInfo(m_filePath).completeBaseName();
+    const int n = static_cast<int>(m_split.parts.size());
+    QProgressDialog progress(QString::fromUtf8("Teile werden geslict ..."), "Abbrechen", 0, n * 100, this);
+    progress.setWindowModality(Qt::WindowModal);
+    progress.setMinimumDuration(0);
+    QStringList done, failed;
+    double seconds = 0, grams = 0;
+    for (int i = 0; i < n && !progress.wasCanceled(); ++i) {
+        const auto& part = m_split.parts[static_cast<size_t>(i)];
+        progress.setLabelText(QString::fromUtf8("%1 von %2: %3").arg(i + 1).arg(n).arg(QString::fromStdString(part.name)));
+        const auto r = fw::slice(part.shape, m_profile, [&](double f) {
+            progress.setValue(i * 100 + static_cast<int>(f * 99));
+            QApplication::processEvents();
+            return !progress.wasCanceled();
+        }, m_doc.modifiers());
+        if (r.cancelled) break;
+        const QString name = QString("%1_%2.gcode").arg(base, part.pins ? QString("passstifte")
+                                                                        : QString("teil%1").arg(i + 1));
+        if (!r.ok) { failed << QString("%1: %2").arg(QString::fromStdString(part.name), QString::fromStdString(r.error)); continue; }
+        QFile f(QDir(dir).filePath(name));
+        if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) { failed << name; continue; }
+        f.write(QByteArray::fromStdString(r.gcode));
+        done << name;
+        seconds += r.estimatedSeconds;
+        grams += r.filamentGrams;
+    }
+    progress.setValue(n * 100);
+    const int minutes = static_cast<int>(seconds / 60 + 0.5);
+    QString text = QString::fromUtf8("%1 Datei(en) gespeichert in %2\n\n%3\n\nGesamt ca. %4 h %5 min, %6 g Filament")
+                       .arg(done.size()).arg(dir, done.join("\n")).arg(minutes / 60).arg(minutes % 60).arg(grams, 0, 'f', 0);
+    if (!failed.isEmpty()) text += QString::fromUtf8("\n\nNicht gespeichert:\n") + failed.join("\n");
+    QMessageBox::information(this, "Alle Teile speichern", text);
 }

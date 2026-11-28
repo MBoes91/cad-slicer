@@ -7,6 +7,7 @@
 
 #include <QDialog>
 
+#include <functional>
 #include <vector>
 
 class QComboBox;
@@ -85,6 +86,31 @@ private:
     QComboBox* m_shape;
     QDoubleSpinBox *m_cx, *m_cy, *m_cz, *m_sx, *m_sy, *m_sz, *m_density;
     QComboBox* m_pattern;
+};
+
+// Zu grosses Bauteil fuer den Druck teilen: Schnitte und Verbindungsart
+class SplitDialog : public QDialog {
+    Q_OBJECT
+public:
+    // size: Abmessungen des Bauteils, lo: kleinste Koordinaten; bed: Bauraum
+    SplitDialog(const fw::SplitPlan& plan, const double size[3], const double lo[3], const double bed[3],
+                std::function<std::vector<fw::SplitCut>(const fw::SplitPlan&)> autoCuts, QWidget* parent = nullptr);
+    fw::SplitPlan plan() const;
+    bool removeRequested() const { return m_remove; }
+signals:
+    void applyRequested(const fw::SplitPlan& plan);
+private:
+    void addCutRow(const fw::SplitCut& c);
+    void updateLabels();
+    double m_lo[3], m_size[3];
+    bool m_remove = false;
+    QTableWidget* m_cuts;
+    QComboBox* m_conn;
+    QDoubleSpinBox *m_diameter, *m_length, *m_clearance, *m_margin;
+    QSpinBox* m_count;
+    QCheckBox* m_pins;
+    class QFormLayout* m_form;
+    class QLabel* m_hint = nullptr;
 };
 
 // Ein Hoehen-Ereignis anlegen (z. B. aus der Schichtvorschau)

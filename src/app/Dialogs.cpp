@@ -744,3 +744,183 @@ fw::PrintModifier ModifierDialog::modifier() const
     m.infillPattern = m_pattern->currentIndex();
     return m;
 }
+
+// --- Teilen -------------------------------------------------------------------------
+
+SplitDialog::SplitDialog(const fw::SplitPlan& plan, const double size[3], const double lo[3], const double bed[3],
+                         std::function<std::vector<fw::SplitCut>(const fw::SplitPlan&)> autoCuts, QWidget* parent)
+    : QDialog(parent)
+{
+    setWindowTitle(QString::fromUtf8("Für den Druck teilen"));
+    for (int i = 0; i < 3; ++i) { m_lo[i] = lo[i]; m_size[i] = size[i]; }
+
+    auto* info = new QLabel(QString::fromUtf8("Bauteil: %1 × %2 × %3 mm · Bauraum: %4 × %5 × %6 mm\n"
+                                              "Das Bauteil selbst bleibt unverändert, geteilt wird nur für den Druck.")
+                                .arg(size[0], 0, 'f', 1).arg(size[1], 0, 'f', 1).arg(size[2], 0, 'f', 1)
+                                .arg(bed[0], 0, 'f', 0).arg(bed[1], 0, 'f', 0).arg(bed[2], 0, 'f', 0));
+    info->setStyleSheet("color: #5a6270;");
+
+    m_cuts = new QTableWidget(0, 2);
+    m_cuts->setHorizontalHeaderLabels({"Achse", "Position"});
+    m_cuts->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    m_cuts->verticalHeader()->setVisible(false);
+    m_cuts->setMinimumHeight(130);
+    for (const auto& c : plan.cuts) addCutRow(c);
+
+    auto* bAuto = new QPushButton("Automatisch");
+    bAuto->setToolTip(QString::fromUtf8("Schnitte so setzen, dass jedes Teil in den Bauraum passt"));
+    auto* bAdd = new QPushButton(QString::fromUtf8("Schnitt hinzufügen"));
+    auto* bDel = new QPushButton("Entfernen");
+    auto* cutButtons = new QHBoxLayout;
+    cutButtons->addWidget(bAuto);
+    cutButtons->addWidget(bAdd);
+    cutButtons->addWidget(bDel);
+    cutButtons->addStretch();
+
+    m_conn = new QComboBox;
+    for (auto c : {fw::SplitConnector::None, fw::SplitConnector::Pins, fw::SplitConnector::Peg, fw::SplitConnector::Dovetail, fw::SplitConnector::Screw})
+        m_conn->addItem(QString::fromUtf8(fw::connectorName(c)));
+    m_conn->setCurrentIndex(static_cast<int>(plan.connector));
+    m_diameter = mmBox(1, 100, plan.diameter);
+    m_length = mmBox(1, 200, plan.length);
+    m_clearance = mmBox(0, 2, plan.clearance);
+    m_clearance->setSingleStep(0.05);
+    m_margin = mmBox(0, 50, plan.margin);
+    m_count = new QSpinBox;
+    m_count->setRange(0, 20);
+    m_count->setSpecialValueText("Automatisch");
+    m_count->setValue(plan.count);
+    m_pins = new QCheckBox(QString::fromUtf8("Passstifte als eigenes Teil mitdrucken"));
+    m_pins->setChecked(plan.printPins);
+
+    m_form = new QFormLayout;
+    m_form->addRow("Verbindung:", m_conn);
+    m_form->addRow("Durchmesser:", m_diameter);
+    m_form->addRow(QString::fromUtf8("Länge:"), m_length);
+    m_form->addRow("Spiel je Seite:", m_clearance);
+    m_form->addRow("Randabstand:", m_margin);
+    m_form->addRow("Anzahl je Fläche:", m_count);
+    m_form->addRow(m_pins);
+    auto* hint = new QLabel;
+    hint->setWordWrap(true);
+    hint->setStyleSheet("color: #5a6270;");
+    m_form->addRow(hint);
+
+    connect(m_conn, &QComboBox::currentIndexChanged, this, [this, hint](int i) {
+        fw::SplitPlan p;
+        p.setDefaults(static_cast<fw::SplitConnector>(i));
+        m_diameter->setValue(p.diameter);
+        m_length->setValue(p.length);
+        updateLabels();
+        (void)hint;
+    });
+    connect(bAuto, &QPushButton::clicked, this, [this, autoCuts] {
+        m_cuts->setRowCount(0);
+        const auto cuts = autoCuts(this->plan());
+        for (const auto& c : cuts) addCutRow(c);
+        if (cuts.empty()) QMessageBox::information(this, "Teilen", QString::fromUtf8("Das Bauteil passt bereits in den Bauraum."));
+    });
+    connect(bAdd, &QPushButton::clicked, this, [this] {
+        // Neuer Schnitt in der Mitte der laengsten Achse
+        int a = 0;
+        for (int i = 1; i < 3; ++i) if (m_size[i] > m_size[a]) a = i;
+        addCutRow({a, m_lo[a] + m_size[a] / 2});
+    });
+    connect(bDel, &QPushButton::clicked, this, [this] {
+        const int r = m_cuts->currentRow();
+        if (r >= 0) m_cuts->removeRow(r);
+        else if (m_cuts->rowCount() > 0) m_cuts->removeRow(m_cuts->rowCount() - 1);
+    });
+    m_hint = hint;
+    updateLabels();
+
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Apply | QDialogButtonBox::Cancel);
+    buttons->button(QDialogButtonBox::Apply)->setText("Vorschau");
+    auto* remove = buttons->addButton(QString::fromUtf8("Teilen aufheben"), QDialogButtonBox::ResetRole);
+    connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+    connect(buttons->button(QDialogButtonBox::Apply), &QPushButton::clicked, this, [this] { emit applyRequested(this->plan()); });
+    connect(remove, &QPushButton::clicked, this, [this] { m_remove = true; accept(); });
+
+    auto* lay = new QVBoxLayout(this);
+    lay->addWidget(info);
+    auto* cutTitle = new QLabel("<b>Schnitte</b>");
+    lay->addWidget(cutTitle);
+    lay->addWidget(m_cuts);
+    lay->addLayout(cutButtons);
+    auto* connTitle = new QLabel("<b>Verbindung der Teile</b>");
+    lay->addWidget(connTitle);
+    lay->addLayout(m_form);
+    lay->addWidget(buttons);
+    resize(460, 560);
+}
+
+void SplitDialog::addCutRow(const fw::SplitCut& c)
+{
+    const int r = m_cuts->rowCount();
+    m_cuts->insertRow(r);
+    auto* axis = new QComboBox;
+    axis->addItems({"X", "Y", "Z"});
+    axis->setCurrentIndex(c.axis);
+    auto* pos = mmBox(-10000, 10000, c.pos, " mm", 1);
+    m_cuts->setCellWidget(r, 0, axis);
+    m_cuts->setCellWidget(r, 1, pos);
+}
+
+void SplitDialog::updateLabels()
+{
+    const auto c = static_cast<fw::SplitConnector>(m_conn->currentIndex());
+    const bool any = c != fw::SplitConnector::None;
+    for (QWidget* w : {static_cast<QWidget*>(m_diameter), static_cast<QWidget*>(m_length), static_cast<QWidget*>(m_clearance),
+                       static_cast<QWidget*>(m_margin), static_cast<QWidget*>(m_count)})
+        m_form->setRowVisible(w, any);
+    m_form->setRowVisible(m_pins, c == fw::SplitConnector::Pins);
+    m_form->setRowVisible(m_count, any && c != fw::SplitConnector::Dovetail);
+    auto label = [this](QWidget* w, const QString& t) {
+        if (auto* l = qobject_cast<QLabel*>(m_form->labelForField(w))) l->setText(t);
+    };
+    m_diameter->setPrefix(QString());
+    m_diameter->setSuffix(" mm");
+    m_diameter->setDecimals(2);
+    switch (c) {
+    case fw::SplitConnector::Pins:
+        label(m_diameter, "Stiftdurchmesser:"); label(m_length, QString::fromUtf8("Stiftlänge:"));
+        m_hint->setText(QString::fromUtf8("Auf beiden Seiten entstehen Löcher (Durchmesser + Spiel). Die Stifte werden mitgedruckt oder z. B. als Holzdübel oder Stahlstift zugekauft."));
+        break;
+    case fw::SplitConnector::Peg:
+        label(m_diameter, "Zapfendurchmesser:"); label(m_length, QString::fromUtf8("Zapfenlänge:"));
+        m_hint->setText(QString::fromUtf8("Ein Teil bekommt einen angedruckten Zapfen, das andere das passende Loch mit Spiel."));
+        break;
+    case fw::SplitConnector::Dovetail:
+        label(m_diameter, "Breite am Grund:"); label(m_length, "Tiefe:");
+        m_hint->setText(QString::fromUtf8("Eine Schwalbenschwanz-Feder (15°) läuft quer über die ganze Schnittfläche, die Teile werden ineinander geschoben."));
+        break;
+    case fw::SplitConnector::Screw:
+        label(m_diameter, "Schraube M:"); label(m_length, QString::fromUtf8("Schraubenlänge:"));
+        m_diameter->setSuffix(QString());
+        m_diameter->setDecimals(1);
+        m_hint->setText(QString::fromUtf8("Durchgangsloch mit Kopfsenkung auf der einen und Sechskant-Mutterfalle auf der anderen Seite (Mutter von außen einlegen)."));
+        break;
+    case fw::SplitConnector::None:
+        m_hint->setText(QString::fromUtf8("Die Teile werden nur geschnitten, z. B. zum Kleben."));
+        break;
+    }
+}
+
+fw::SplitPlan SplitDialog::plan() const
+{
+    fw::SplitPlan p;
+    for (int r = 0; r < m_cuts->rowCount(); ++r) {
+        auto* axis = qobject_cast<QComboBox*>(m_cuts->cellWidget(r, 0));
+        auto* pos = qobject_cast<QDoubleSpinBox*>(m_cuts->cellWidget(r, 1));
+        if (axis && pos) p.cuts.push_back({axis->currentIndex(), pos->value()});
+    }
+    p.connector = static_cast<fw::SplitConnector>(m_conn->currentIndex());
+    p.diameter = m_diameter->value();
+    p.length = m_length->value();
+    p.clearance = m_clearance->value();
+    p.margin = m_margin->value();
+    p.count = m_count->value();
+    p.printPins = m_pins->isChecked();
+    return p;
+}

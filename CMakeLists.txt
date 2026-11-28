@@ -44,7 +44,8 @@ add_library(formwerk_core STATIC
   src/core/PartDocument.cpp
   src/core/Expression.cpp
   src/core/ModifyFeatures.cpp
-  src/core/ImportFeature.cpp)
+  src/core/ImportFeature.cpp
+  src/core/Split.cpp)
 target_include_directories(formwerk_core PUBLIC src ${OpenCASCADE_INCLUDE_DIR})
 # OpenCascade 7.8+ hat TKSTL in TKDESTL umbenannt (vcpkg liefert 8.x)
 # ebenso STEP: TKDESTEP statt TKSTEP/TKSTEPBase/...

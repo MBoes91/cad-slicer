@@ -1,4 +1,5 @@
 // Einfache Tests ohne Framework: Bauteil modellieren, slicen, G-Code pruefen.
+#include <BRepPrimAPI_MakeBox.hxx>
 #include "core/Expression.h"
 #include "core/PartDocument.h"
 #include "slicer/Settings.h"
@@ -116,6 +117,55 @@ static void testTangentArc()
     g.drag(c, 12, 6);
     const auto& P = g.points;
     CHECK(std::abs(P[c].x - P[b].x) < 1e-4);
+}
+
+static void testSplit()
+{
+    // 300 x 100 x 20 mm Platte: passt nicht auf 220 x 220
+    const TopoDS_Shape plate = BRepPrimAPI_MakeBox(300, 100, 20).Shape();
+    fw::SplitPlan plan;
+    plan.cuts = fw::autoCuts(plate, 220, 220, 250, plan);
+    CHECK(plan.cuts.size() == 1);
+    CHECK(plan.cuts.size() == 1 && plan.cuts[0].axis == 0 && std::abs(plan.cuts[0].pos - 150) < 1e-6);
+
+    // Passstifte: Loecher in beiden Haelften, Stifte als eigenes Teil
+    auto r = fw::splitBody(plate, plan);
+    CHECK(r.ok);
+    CHECK(r.parts.size() == 3);
+    CHECK(r.connectors >= 2);
+    const double hole = M_PI * std::pow(2.5 + 0.2, 2) * (5.5 + 5.5);
+    if (r.parts.size() == 3) {
+        const double v = volume(r.parts[0].shape) + volume(r.parts[1].shape);
+        CHECK(std::abs(v - (300.0 * 100 * 20 - r.connectors * hole)) < 5.0);
+        CHECK(r.parts[2].pins);
+        CHECK(r.parts[1].explode.X() > 0.5);
+    }
+
+    // Zapfen: Volumen bleibt bis auf das Spiel erhalten
+    plan.setDefaults(fw::SplitConnector::Peg);
+    r = fw::splitBody(plate, plan);
+    CHECK(r.ok && r.parts.size() == 2);
+    if (r.parts.size() == 2) {
+        const double v = volume(r.parts[0].shape) + volume(r.parts[1].shape);
+        const double gap = r.connectors * M_PI * (std::pow(3.2, 2) * 8.5 - std::pow(3.0, 2) * 8.0);
+        CHECK(std::abs(v - (300.0 * 100 * 20 - gap)) < 5.0);
+        CHECK(volume(r.parts[0].shape) > 150.0 * 100 * 20); // Zapfen haengt am ersten Teil
+    }
+
+    // Schwalbenschwanz und Schraube laufen durch
+    plan.setDefaults(fw::SplitConnector::Dovetail);
+    r = fw::splitBody(plate, plan);
+    CHECK(r.ok && r.parts.size() == 2 && r.connectors == 1);
+    plan.setDefaults(fw::SplitConnector::Screw);
+    r = fw::splitBody(plate, plan);
+    CHECK(r.ok && r.parts.size() == 2 && r.connectors >= 1);
+
+    // Speichern und Laden
+    fw::PartDocument doc;
+    doc.splitPlan() = plan;
+    fw::PartDocument doc2;
+    CHECK(doc2.fromText(doc.toText()));
+    CHECK(doc2.splitPlan().cuts.size() == 1 && doc2.splitPlan().connector == fw::SplitConnector::Screw);
 }
 
 static void testRevolve()
@@ -707,6 +757,7 @@ int main()
     testCancel();
     testSupports();
     testProfilesAndEvents();
+    testSplit();
     testBranchedProfile();
     testTangentArc();
     testExtrudeWithHole();
