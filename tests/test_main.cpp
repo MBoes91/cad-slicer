@@ -10,6 +10,7 @@
 #include <GProp_GProps.hxx>
 
 #include <cmath>
+#include <filesystem>
 #include <cstdio>
 #include <sstream>
 #include <string>
@@ -509,7 +510,8 @@ static void testImportExport()
     doc.addFeature(sk);
     doc.addFeature(std::make_shared<fw::ExtrudeFeature>("Extrusion1", sk, 5.0));
     CHECK(doc.recompute());
-    const std::string step = "/tmp/formwerk_test.step", stl = "/tmp/formwerk_test.stl";
+    const auto tmp = std::filesystem::temp_directory_path();
+    const std::string step = (tmp / "formwerk_test.step").string(), stl = (tmp / "formwerk_test.stl").string();
     CHECK(doc.exportStep(step));
     CHECK(doc.exportStl(stl));
     for (const auto& path : {step, stl}) {
