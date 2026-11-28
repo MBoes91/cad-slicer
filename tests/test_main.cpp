@@ -101,6 +101,23 @@ static void testBranchedProfile()
     CHECK(std::abs(gp.Mass() - (1200 - M_PI * 25)) < 0.5);
 }
 
+static void testTangentArc()
+{
+    // Bogen, der tangential an das Ende einer Linie anschliesst
+    fw::SketchGeometry g;
+    const int a = g.addPoint(0, 0), b = g.addPoint(10, 0);
+    const int line = g.addLine(a, b);
+    const int c = g.addPoint(10, 5), e = g.addPoint(15, 5);
+    const int arc = g.addArc(c, b, e);
+    CHECK(g.canAdd({fw::ConType::Tangent, line, arc}));
+    g.addConstraint({fw::ConType::Tangent, line, arc});
+    g.addConstraint({fw::ConType::Horizontal, line});
+    // Mittelpunkt verschieben: Tangentialitaet bleibt (Radius senkrecht zur Linie)
+    g.drag(c, 12, 6);
+    const auto& P = g.points;
+    CHECK(std::abs(P[c].x - P[b].x) < 1e-4);
+}
+
 static void testRevolve()
 {
     fw::PartDocument doc;
@@ -691,6 +708,7 @@ int main()
     testSupports();
     testProfilesAndEvents();
     testBranchedProfile();
+    testTangentArc();
     testExtrudeWithHole();
     testRevolve();
     testSlice();

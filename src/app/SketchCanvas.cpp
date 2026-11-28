@@ -107,6 +107,7 @@ void SketchCanvas::setTool(Tool t)
 void SketchCanvas::cancelOperation()
 {
     m_pending.clear();
+    m_rectDirSet = false;
     m_picked.clear();
     m_dragPoint = -1;
     m_dragLabel = -1;
@@ -777,9 +778,23 @@ void SketchCanvas::paintEvent(QPaintEvent*)
             p.drawLine(toScreen(last.x, last.y), target);
             break;
         }
-        case Tool::Rectangle:
-            p.drawRect(QRectF(as, target).normalized());
+        case Tool::Rectangle: {
+            if (m_rectMode == 0) { p.drawRect(QRectF(as, target).normalized()); break; }
+            std::array<QPointF, 4> c;
+            if (rectVariantCorners(toSketch(m_mouse), c)) {
+                QPolygonF poly;
+                for (const auto& q : c) poly << toScreen(q.x(), q.y());
+                p.drawPolygon(poly);
+                if (m_rectMode >= 2) {
+                    p.setPen(QPen(kHoverColor, 1, Qt::DotLine));
+                    p.drawLine(poly[0], poly[2]);
+                    p.drawLine(poly[1], poly[3]);
+                }
+            } else {
+                p.drawLine(m_rectMode == 3 && m_rectDirSet ? toScreen(m_rectDir.x(), m_rectDir.y()) : toScreen(P[m_pending.back()].x, P[m_pending.back()].y), m_mouse);
+            }
             break;
+        }
         case Tool::Circle: {
             const double r = std::hypot(target.x() - as.x(), target.y() - as.y());
             p.drawEllipse(as, r, r);
@@ -787,8 +802,9 @@ void SketchCanvas::paintEvent(QPaintEvent*)
         }
         case Tool::Polygon: {
             const QPointF cm = toSketch(m_mouse);
-            const double rr = std::hypot(cm.x() - a.x, cm.y() - a.y);
-            const double a0 = std::atan2(cm.y() - a.y, cm.x() - a.x);
+            const bool outer = m_polyMode == 1;
+            const double rr = std::hypot(cm.x() - a.x, cm.y() - a.y) / (outer ? std::cos(M_PI / m_polySides) : 1.0);
+            const double a0 = std::atan2(cm.y() - a.y, cm.x() - a.x) - (outer ? M_PI / m_polySides : 0.0);
             QPolygonF poly;
             for (int i = 0; i <= m_polySides; ++i) {
                 const double ang = a0 + 2 * M_PI * i / m_polySides;
@@ -814,6 +830,21 @@ void SketchCanvas::paintEvent(QPaintEvent*)
             break;
         }
         case Tool::Arc: {
+            if (m_arcMode != 1) {
+                QPointF ctr; double r, a0, sweep;
+                if (arcPreview(toSketch(m_mouse), ctr, r, a0, sweep)) {
+                    QPolygonF poly;
+                    const int steps = 48;
+                    for (int i = 0; i <= steps; ++i) {
+                        const double a = a0 + sweep * i / steps;
+                        poly << toScreen(ctr.x() + r * std::cos(a), ctr.y() + r * std::sin(a));
+                    }
+                    p.drawPolyline(poly);
+                } else {
+                    p.drawLine(toScreen(P[m_pending.back()].x, P[m_pending.back()].y), m_mouse);
+                }
+                break;
+            }
             if (m_pending.size() == 1) {
                 p.drawLine(as, m_mouse);
             } else {
@@ -920,6 +951,23 @@ void SketchCanvas::mousePressEvent(QMouseEvent* e)
         break;
     }
     case Tool::Rectangle:
+        if (m_rectMode == 1) {          // drei Punkte: erste Kante, dann Breite
+            if (m_pending.size() < 2) {
+                const int p = pickOrCreatePoint(pos);
+                if (m_pending.empty() || p != m_pending[0]) m_pending.push_back(p);
+                break;
+            }
+            std::array<QPointF, 4> c;
+            if (rectVariantCorners(toSketch(pos), c)) addQuad(c, m_pending[0], m_pending[1], -1, false);
+            break;
+        }
+        if (m_rectMode == 2 || m_rectMode == 3) { // vom Mittelpunkt aus
+            if (m_pending.empty()) { m_pending.push_back(pickOrCreatePoint(pos)); break; }
+            if (m_rectMode == 3 && !m_rectDirSet) { m_rectDir = toSketch(pos); m_rectDirSet = true; break; }
+            std::array<QPointF, 4> c;
+            if (rectVariantCorners(toSketch(pos), c)) addQuad(c, -1, -1, m_pending[0], m_rectMode == 2);
+            break;
+        }
         if (!m_dyn.empty() && std::any_of(m_dyn.begin(), m_dyn.end(), [](const DynField& f) { return !f.text.isEmpty(); })) {
             commitDynamic();
             break;
@@ -927,6 +975,13 @@ void SketchCanvas::mousePressEvent(QMouseEvent* e)
         rectTo(pickOrCreatePoint(pos));
         break;
     case Tool::Circle: {
+        if (m_circleMode == 1) {        // tangential an drei Linien
+            if (h.kind == Hit::Entity && m_geo.entities[static_cast<size_t>(h.index)].type == SkType::Line
+                && std::none_of(m_picked.begin(), m_picked.end(), [&](const Hit& x) { return x.index == h.index; }))
+                m_picked.push_back(h);
+            if (m_picked.size() == 3) tangentCircle();
+            break;
+        }
         if (m_pending.empty()) { m_pending.push_back(pickOrCreatePoint(pos)); break; }
         if (!m_dyn.empty() && !m_dyn[0].text.isEmpty()) { commitDynamic(); break; }
         const auto& c = m_geo.points[m_pending[0]];
@@ -935,6 +990,41 @@ void SketchCanvas::mousePressEvent(QMouseEvent* e)
         break;
     }
     case Tool::Arc: {
+        if (m_arcMode == 0 || m_arcMode == 2) {
+            if (m_arcMode == 2 && m_pending.empty()) {   // tangential: am Ende einer Linie beginnen
+                const int p = pointAt(pos);
+                const bool lineEnd = p > 0 && std::any_of(m_geo.entities.begin(), m_geo.entities.end(), [p](const SkEntity& e) {
+                    return e.type == SkType::Line && !e.construction && (e.p0 == p || e.p1 == p); });
+                if (!lineEnd) { m_message = QString::fromUtf8("Tangentialer Bogen: Endpunkt einer Linie anklicken."); break; }
+                m_pending.push_back(p);
+                break;
+            }
+            const size_t need = m_arcMode == 0 ? 2 : 1;
+            if (m_pending.size() < need) {
+                const int p = pickOrCreatePoint(pos);
+                if (m_pending.empty() || p != m_pending.back()) m_pending.push_back(p);
+                break;
+            }
+            QPointF ctr; double r, a0, sweep;
+            if (!arcPreview(toSketch(pos), ctr, r, a0, sweep)) break;
+            const int start = m_pending[0];
+            const int end = m_arcMode == 0 ? m_pending[1] : pickOrCreatePoint(pos);
+            if (end == start) break;
+            const int cp = m_geo.addPoint(ctr.x(), ctr.y());
+            const int arc = sweep > 0 ? m_geo.addArc(cp, start, end) : m_geo.addArc(cp, end, start);
+            if (m_arcMode == 2) {
+                for (size_t i = 0; i < m_geo.entities.size(); ++i) {
+                    const auto& e = m_geo.entities[i];
+                    if (e.type == SkType::Line && !e.construction && (e.p0 == start || e.p1 == start)) {
+                        if (m_geo.canAdd({ConType::Tangent, static_cast<int>(i), arc})) m_geo.addConstraint({ConType::Tangent, static_cast<int>(i), arc});
+                        break;
+                    }
+                }
+            }
+            m_pending.clear();
+            resolve();
+            break;
+        }
         if (m_pending.size() < 2) { m_pending.push_back(pickOrCreatePoint(pos)); break; }
         const auto c = m_geo.points[m_pending[0]];
         const auto s = m_geo.points[m_pending[1]];
@@ -1024,20 +1114,24 @@ void SketchCanvas::polygonTo(const QPointF& corner)
     if (m_pending.empty()) return;
     const int center = m_pending[0];
     const auto c = m_geo.points[static_cast<size_t>(center)];
-    const double r = std::hypot(corner.x() - c.x, corner.y() - c.y);
-    if (r < 1e-6) return;
-    const double a0 = std::atan2(corner.y() - c.y, corner.x() - c.x);
     const int n = m_polySides;
+    const double rc = std::hypot(corner.x() - c.x, corner.y() - c.y);
+    if (rc < 1e-6) return;
+    // umschrieben: der Klick liegt auf einer Seitenmitte, die Ecken liegen weiter aussen
+    const bool outer = m_polyMode == 1;
+    const double r = outer ? rc / std::cos(M_PI / n) : rc;
+    const double a0 = std::atan2(corner.y() - c.y, corner.x() - c.x) - (outer ? M_PI / n : 0.0);
     std::vector<int> pts;
     for (int i = 0; i < n; ++i) {
         const double a = a0 + 2 * M_PI * i / n;
         pts.push_back(m_geo.addPoint(c.x + r * std::cos(a), c.y + r * std::sin(a)));
     }
-    const int circle = m_geo.addCircle(center, r, true);
+    const int circle = m_geo.addCircle(center, outer ? rc : r, true);
     std::vector<int> lines;
     for (int i = 0; i < n; ++i) lines.push_back(m_geo.addLine(pts[static_cast<size_t>(i)], pts[static_cast<size_t>((i + 1) % n)]));
     auto add = [this](SkConstraint k) { if (m_geo.canAdd(k)) m_geo.addConstraint(k); };
-    for (int p : pts) add({ConType::PointOnEntity, p, circle});
+    if (outer) for (int l : lines) add({ConType::Tangent, l, circle});
+    else for (int p : pts) add({ConType::PointOnEntity, p, circle});
     for (int i = 1; i < n; ++i) add({ConType::Equal, lines[0], lines[static_cast<size_t>(i)]});
     // Waagerechte Unterkante, wenn die Ecke annaehernd so gesetzt wurde
     addAutoHV(lines[0]);
@@ -1133,6 +1227,212 @@ bool SketchCanvas::filletCorner(int p, double r, const std::string& expr)
     return true;
 }
 
+void SketchCanvas::setVariant(Tool t, int v)
+{
+    switch (t) {
+    case Tool::Rectangle: m_rectMode = std::clamp(v, 0, 3); break;
+    case Tool::Circle: m_circleMode = std::clamp(v, 0, 1); break;
+    case Tool::Arc: m_arcMode = std::clamp(v, 0, 2); break;
+    case Tool::Polygon: m_polyMode = std::clamp(v, 0, 1); break;
+    default: return;
+    }
+    cancelOperation();
+    updateStatus();
+    update();
+}
+
+int SketchCanvas::variant(Tool t) const
+{
+    switch (t) {
+    case Tool::Rectangle: return m_rectMode;
+    case Tool::Circle: return m_circleMode;
+    case Tool::Arc: return m_arcMode;
+    case Tool::Polygon: return m_polyMode;
+    default: return 0;
+    }
+}
+
+// Ecken des Rechtecks fuer die Varianten 1-3 bei Mausposition m (Sketch-Koordinaten)
+bool SketchCanvas::rectVariantCorners(const QPointF& m, std::array<QPointF, 4>& out) const
+{
+    const auto& P = m_geo.points;
+    auto pt = [&](int i) { return QPointF(P[static_cast<size_t>(i)].x, P[static_cast<size_t>(i)].y); };
+    auto dot = [](QPointF a, QPointF b) { return a.x() * b.x() + a.y() * b.y(); };
+    if (m_rectMode == 1 && m_pending.size() == 2) {
+        const QPointF A = pt(m_pending[0]), B = pt(m_pending[1]), u = B - A;
+        const double len = std::hypot(u.x(), u.y());
+        if (len < 1e-9) return false;
+        const QPointF n(-u.y() / len, u.x() / len);
+        const double w = dot(m - A, n);
+        if (std::abs(w) < 1e-6) return false;
+        out = {A, B, B + n * w, A + n * w};
+        return true;
+    }
+    if (m_rectMode == 2 && m_pending.size() == 1) {
+        const QPointF C = pt(m_pending[0]), d = m - C;
+        if (std::abs(d.x()) < 1e-6 || std::abs(d.y()) < 1e-6) return false;
+        out = {C - d, QPointF(C.x() + d.x(), C.y() - d.y()), C + d, QPointF(C.x() - d.x(), C.y() + d.y())};
+        return true;
+    }
+    if (m_rectMode == 3 && m_pending.size() == 1 && m_rectDirSet) {
+        const QPointF C = pt(m_pending[0]), u = m_rectDir - C;
+        const double len = std::hypot(u.x(), u.y());
+        if (len < 1e-9) return false;
+        const QPointF n(-u.y() / len, u.x() / len);
+        const double w = dot(m - C, n);
+        if (std::abs(w) < 1e-6) return false;
+        out = {C - u - n * w, C + u - n * w, C + u + n * w, C - u + n * w};
+        return true;
+    }
+    return false;
+}
+
+void SketchCanvas::addQuad(const std::array<QPointF, 4>& c, int a, int b, int center, bool axisAligned)
+{
+    std::array<int, 4> p{};
+    for (int i = 0; i < 4; ++i) {
+        if (i == 0 && a > 0) p[0] = a;
+        else if (i == 1 && b > 0) p[1] = b;
+        else p[static_cast<size_t>(i)] = m_geo.addPoint(c[static_cast<size_t>(i)].x(), c[static_cast<size_t>(i)].y());
+    }
+    std::array<int, 4> l{};
+    for (int i = 0; i < 4; ++i) l[static_cast<size_t>(i)] = m_geo.addLine(p[static_cast<size_t>(i)], p[static_cast<size_t>((i + 1) % 4)]);
+    auto add = [this](SkConstraint k) { if (m_geo.canAdd(k)) m_geo.addConstraint(k); };
+    if (axisAligned) {
+        const bool firstHorizontal = std::abs(c[1].y() - c[0].y()) < 1e-9;
+        for (int i = 0; i < 4; ++i)
+            add({(i % 2 == 0) == firstHorizontal ? ConType::Horizontal : ConType::Vertical, l[static_cast<size_t>(i)]});
+    } else {
+        add({ConType::Perpendicular, l[0], l[1]});
+        add({ConType::Parallel, l[0], l[2]});
+        add({ConType::Parallel, l[1], l[3]});
+        addAutoHV(l[0]);
+    }
+    if (center > 0) {
+        // Konstruktionsdiagonale mit dem Mittelpunkt in ihrer Mitte (wie in Inventor)
+        const int d = m_geo.addLine(p[0], p[2], true);
+        add({ConType::Midpoint, center, d});
+        m_geo.addLine(p[1], p[3], true);
+    }
+    m_pending.clear();
+    m_rectDirSet = false;
+    resolve();
+}
+
+// Kreis tangential an drei gewaehlte Linien (Inkreis des Dreiecks ihrer Geraden)
+void SketchCanvas::tangentCircle()
+{
+    const auto& P = m_geo.points;
+    std::array<int, 3> L{m_picked[0].index, m_picked[1].index, m_picked[2].index};
+    m_picked.clear();
+    m_selected = {};
+    auto line = [&](int i, QPointF& a, QPointF& d) {
+        const auto& e = m_geo.entities[static_cast<size_t>(i)];
+        a = QPointF(P[e.p0].x, P[e.p0].y);
+        d = QPointF(P[e.p1].x, P[e.p1].y) - a;
+    };
+    auto cut = [&](int i, int j, QPointF& out) {
+        QPointF a, d, b, e;
+        line(i, a, d);
+        line(j, b, e);
+        const double den = d.x() * e.y() - d.y() * e.x();
+        if (std::abs(den) < 1e-9) return false;
+        const double t = ((b.x() - a.x()) * e.y() - (b.y() - a.y()) * e.x()) / den;
+        out = a + d * t;
+        return true;
+    };
+    auto addCircleAt = [&](const QPointF& I, double r) {
+        const int cp = m_geo.addPoint(I.x(), I.y());
+        const int circle = m_geo.addCircle(cp, r);
+        for (int l : L)
+            if (m_geo.canAdd({ConType::Tangent, l, circle})) m_geo.addConstraint({ConType::Tangent, l, circle});
+        resolve();
+    };
+    QPointF A, B, C; // A gegenueber Linie 0 usw.
+    const bool okA = cut(L[1], L[2], A), okB = cut(L[2], L[0], B), okC = cut(L[0], L[1], C);
+    if (!okA || !okB || !okC) {
+        // Zwei parallele Linien: Kreis liegt mittig dazwischen und beruehrt die dritte
+        int i = -1, j = -1, k = -1;
+        if (!okC) { i = 0; j = 1; k = 2; } else if (!okA) { i = 1; j = 2; k = 0; } else { i = 2; j = 0; k = 1; }
+        QPointF a, d, b, e, c3, f;
+        line(L[static_cast<size_t>(i)], a, d);
+        line(L[static_cast<size_t>(j)], b, e);
+        line(L[static_cast<size_t>(k)], c3, f);
+        const double dl = std::hypot(d.x(), d.y()), fl = std::hypot(f.x(), f.y());
+        if (dl < 1e-9 || fl < 1e-9 || std::abs(d.x() * f.y() - d.y() * f.x()) < 1e-9 * dl * fl) {
+            m_message = QString::fromUtf8("Tangentialer Kreis: die Linien sind alle parallel.");
+            return;
+        }
+        const QPointF n(-d.y() / dl, d.x() / dl);
+        const double gap = (b.x() - a.x()) * n.x() + (b.y() - a.y()) * n.y();
+        const double r = std::abs(gap) / 2;
+        if (r < 1e-9) { m_message = QString::fromUtf8("Tangentialer Kreis: die parallelen Linien liegen aufeinander."); return; }
+        const QPointF m0 = a + n * (gap / 2); // Mittellinie: m0 + t*d
+        const QPointF nk(-f.y() / fl, f.x() / fl);
+        // Mitten der beiden parallelen Linien als Hinweis, auf welcher Seite der dritten der Kreis liegt
+        const QPointF hint = (a + d * 0.5 + b + e * 0.5) / 2;
+        const double side = ((hint.x() - c3.x()) * nk.x() + (hint.y() - c3.y()) * nk.y()) >= 0 ? 1.0 : -1.0;
+        // Mittelpunkt: auf der Mittellinie mit Abstand r von der dritten Linie
+        const double den = d.x() * nk.x() + d.y() * nk.y();
+        const double t = (side * r - ((m0.x() - c3.x()) * nk.x() + (m0.y() - c3.y()) * nk.y())) / den;
+        addCircleAt(m0 + d * t, r);
+        return;
+    }
+    const double a = std::hypot(B.x() - C.x(), B.y() - C.y()), b = std::hypot(C.x() - A.x(), C.y() - A.y()),
+                 c = std::hypot(A.x() - B.x(), A.y() - B.y());
+    const double per = a + b + c;
+    const double area = std::abs((B.x() - A.x()) * (C.y() - A.y()) - (C.x() - A.x()) * (B.y() - A.y())) / 2;
+    if (per < 1e-9 || area < 1e-9) { m_message = QString::fromUtf8("Tangentialer Kreis: Linien bilden kein Dreieck."); return; }
+    addCircleAt((A * a + B * b + C * c) / per, 2 * area / per);
+}
+
+// Bogen nach drei Punkten bzw. tangential: Mittelpunkt, Radius, Startwinkel und Winkel (positiv = gegen den Uhrzeigersinn)
+bool SketchCanvas::arcPreview(const QPointF& m, QPointF& ctr, double& r, double& a0, double& sweep) const
+{
+    const auto& P = m_geo.points;
+    auto pt = [&](int i) { return QPointF(P[static_cast<size_t>(i)].x, P[static_cast<size_t>(i)].y); };
+    auto ang = [](QPointF c, QPointF p) { return std::atan2(p.y() - c.y(), p.x() - c.x()); };
+    auto norm = [](double x) { while (x < 0) x += 2 * M_PI; while (x >= 2 * M_PI) x -= 2 * M_PI; return x; };
+    if (m_arcMode == 0 && m_pending.size() == 2) {
+        const QPointF S = pt(m_pending[0]), E = pt(m_pending[1]), M = m;
+        const double d = 2 * (S.x() * (E.y() - M.y()) + E.x() * (M.y() - S.y()) + M.x() * (S.y() - E.y()));
+        if (std::abs(d) < 1e-9) return false;
+        const double s2 = S.x() * S.x() + S.y() * S.y(), e2 = E.x() * E.x() + E.y() * E.y(), m2 = M.x() * M.x() + M.y() * M.y();
+        ctr = QPointF((s2 * (E.y() - M.y()) + e2 * (M.y() - S.y()) + m2 * (S.y() - E.y())) / d,
+                      (s2 * (M.x() - E.x()) + e2 * (S.x() - M.x()) + m2 * (E.x() - S.x())) / d);
+        r = std::hypot(S.x() - ctr.x(), S.y() - ctr.y());
+        a0 = ang(ctr, S);
+        const double toE = norm(ang(ctr, E) - a0), toM = norm(ang(ctr, M) - a0);
+        sweep = toM < toE ? toE : -(2 * M_PI - toE); // durch den dritten Punkt
+        return true;
+    }
+    if (m_arcMode == 2 && m_pending.size() == 1) {
+        const int s = m_pending[0];
+        QPointF t;
+        bool found = false;
+        for (const auto& e : m_geo.entities) {
+            if (e.type != SkType::Line || e.construction || (e.p0 != s && e.p1 != s)) continue;
+            t = pt(s) - pt(e.p0 == s ? e.p1 : e.p0); // Richtung aus der Linie heraus
+            found = true;
+            break;
+        }
+        const double tl = std::hypot(t.x(), t.y());
+        if (!found || tl < 1e-9) return false;
+        t /= tl;
+        const QPointF S = pt(s), n(-t.y(), t.x()), D = m - S;
+        const double dn = D.x() * n.x() + D.y() * n.y();
+        if (std::abs(dn) < 1e-9) return false;
+        const double rs = (D.x() * D.x() + D.y() * D.y()) / (2 * dn); // vorzeichenbehaftet: links positiv
+        ctr = S + n * rs;
+        r = std::abs(rs);
+        a0 = ang(ctr, S);
+        const double toE = norm(ang(ctr, m) - a0);
+        sweep = rs > 0 ? toE : -(2 * M_PI - toE);
+        return true;
+    }
+    return false;
+}
+
 int SketchCanvas::circleTo(double r)
 {
     if (m_pending.empty() || r <= 1e-6) return -1;
@@ -1147,11 +1447,11 @@ int SketchCanvas::circleTo(double r)
 void SketchCanvas::updateDynFields()
 {
     std::vector<QString> labels;
-    const bool drawing = m_tool == Tool::Line || m_tool == Tool::Rectangle || m_tool == Tool::Circle;
+    const bool drawing = m_tool == Tool::Line || (m_tool == Tool::Rectangle && m_rectMode == 0) || (m_tool == Tool::Circle && m_circleMode == 0);
     if (drawing && m_pending.empty()) labels = {"X", "Y"};
     else if (m_tool == Tool::Line) labels = {QString::fromUtf8("Länge"), "Winkel"};
-    else if (m_tool == Tool::Rectangle) labels = {"Breite", QString::fromUtf8("Höhe")};
-    else if (m_tool == Tool::Circle) labels = {"Durchmesser"};
+    else if (m_tool == Tool::Rectangle && m_rectMode == 0) labels = {"Breite", QString::fromUtf8("Höhe")};
+    else if (m_tool == Tool::Circle && m_circleMode == 0) labels = {"Durchmesser"};
 
     bool same = labels.size() == m_dyn.size();
     for (size_t i = 0; same && i < labels.size(); ++i) same = labels[i] == m_dyn[i].label;
@@ -1495,9 +1795,21 @@ void SketchCanvas::updateStatus()
     switch (m_tool) {
     case Tool::Select: hint = "Auswählen: Punkte ziehen, Maße doppelklicken, Entf löscht"; break;
     case Tool::Line: hint = m_pending.empty() ? "Linie: Startpunkt klicken" : "Linie: nächsten Punkt klicken (Rechtsklick beendet)"; break;
-    case Tool::Rectangle: hint = m_pending.empty() ? "Rechteck: erste Ecke klicken" : "Rechteck: gegenüberliegende Ecke klicken"; break;
-    case Tool::Circle: hint = m_pending.empty() ? "Kreis: Mittelpunkt klicken" : "Kreis: Radius festlegen"; break;
-    case Tool::Arc: hint = m_pending.empty() ? "Bogen: Mittelpunkt klicken" : (m_pending.size() == 1 ? "Bogen: Startpunkt klicken" : "Bogen: Endpunkt klicken (gegen den Uhrzeigersinn)"); break;
+    case Tool::Rectangle:
+        if (m_rectMode == 1) hint = m_pending.empty() ? "Rechteck (drei Punkte): erste Ecke klicken" : m_pending.size() == 1 ? "Rechteck (drei Punkte): zweite Ecke klicken (legt die Richtung fest)" : "Rechteck (drei Punkte): Breite festlegen";
+        else if (m_rectMode == 2) hint = m_pending.empty() ? "Rechteck (Mittelpunkt): Mittelpunkt klicken" : "Rechteck (Mittelpunkt): Ecke klicken";
+        else if (m_rectMode == 3) hint = m_pending.empty() ? "Rechteck (drei Punkte Mittelpunkt): Mittelpunkt klicken" : !m_rectDirSet ? "Rechteck: Mitte einer Seite klicken (legt die Richtung fest)" : "Rechteck: Breite festlegen";
+        else hint = m_pending.empty() ? "Rechteck: erste Ecke klicken" : "Rechteck: gegenüberliegende Ecke klicken";
+        break;
+    case Tool::Circle:
+        if (m_circleMode == 1) hint = QString::fromUtf8("Tangentialer Kreis: drei Linien anklicken (%1 von 3)").arg(m_picked.size());
+        else hint = m_pending.empty() ? "Kreis: Mittelpunkt klicken" : "Kreis: Radius festlegen";
+        break;
+    case Tool::Arc:
+        if (m_arcMode == 0) hint = m_pending.empty() ? "Bogen (drei Punkte): Startpunkt klicken" : m_pending.size() == 1 ? "Bogen (drei Punkte): Endpunkt klicken" : "Bogen (drei Punkte): Punkt auf dem Bogen klicken";
+        else if (m_arcMode == 2) hint = m_pending.empty() ? "Tangentialer Bogen: Endpunkt einer Linie klicken" : "Tangentialer Bogen: Endpunkt klicken";
+        else hint = m_pending.empty() ? "Bogen: Mittelpunkt klicken" : (m_pending.size() == 1 ? "Bogen: Startpunkt klicken" : "Bogen: Endpunkt klicken (gegen den Uhrzeigersinn)");
+        break;
     case Tool::Polygon: hint = m_pending.empty() ? QString::fromUtf8("Polygon (%1 Ecken): Mittelpunkt klicken").arg(m_polySides)
                                                  : QString::fromUtf8("Polygon: Ecke klicken"); break;
     case Tool::Slot: hint = m_pending.empty() ? QString::fromUtf8("Langloch: ersten Bogenmittelpunkt klicken")

@@ -203,6 +203,17 @@ std::vector<double> SketchGeometry::residuals(const std::vector<double>& x, cons
                 double dx, dy;
                 v.dir(c.a, dx, dy);
                 const double l = std::hypot(dx, dy);
+                // Linie endet im Bogenende: Radius dort senkrecht zur Linie (gut konditioniert,
+                // der Abstand Mitte-Linie haette an der Loesung keine Steigung)
+                int shared = -1;
+                if (eb.type == SkType::Arc)
+                    for (int lp : {ea.p0, ea.p1})
+                        if (lp == eb.p1 || lp == eb.p2) shared = lp;
+                if (shared >= 0) {
+                    const double rx = v.px(eb.p0) - v.px(shared), ry = v.py(eb.p0) - v.py(shared);
+                    f.push_back(l < 1e-12 ? 0 : (dx * rx + dy * ry) / l);
+                    break;
+                }
                 const double cx = v.px(eb.p0) - v.px(ea.p0), cy = v.py(eb.p0) - v.py(ea.p0);
                 const double dist = l < 1e-12 ? 0 : std::abs(dx * cy - dy * cx) / l;
                 f.push_back(dist - v.r(c.b));

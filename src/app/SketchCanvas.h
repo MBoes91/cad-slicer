@@ -41,6 +41,13 @@ public:
     void setShowConstraints(bool on) { m_showConstraints = on; update(); }
     void setPolygonSides(int n) { m_polySides = std::max(3, n); }
     int polygonSides() const { return m_polySides; }
+    // Erstellungsarten wie in Inventor
+    // Rechteck: 0 zwei Punkte, 1 drei Punkte, 2 zwei Punkte Mittelpunkt, 3 drei Punkte Mittelpunkt
+    // Kreis: 0 Mittelpunkt, 1 tangential (drei Linien)
+    // Bogen: 0 drei Punkte, 1 Mittelpunkt, 2 tangential
+    // Polygon: 0 einbeschrieben (Ecken auf dem Kreis), 1 umschrieben (Seiten beruehren den Kreis)
+    void setVariant(Tool t, int v);
+    int variant(Tool t) const;
 
 signals:
     void statusChanged(const QString& text);
@@ -98,9 +105,17 @@ private:
     std::array<int, 4> rectTo(int p);       // liefert die vier Linien oder -1
     int circleTo(double r);                 // liefert den Kreis oder -1
     void polygonTo(const QPointF& sketchCorner);
+    // Viereck aus vier Ecken (Sketch-Koordinaten); a/b: vorhandene Eckpunkte oder -1; center: Mittelpunkt oder -1
+    void addQuad(const std::array<QPointF, 4>& c, int a, int b, int center, bool axisAligned);
+    bool rectVariantCorners(const QPointF& m, std::array<QPointF, 4>& out) const;
+    void tangentCircle();
+    bool arcPreview(const QPointF& m, QPointF& center, double& r, double& a0, double& sweep) const;
     void slotTo(const QPointF& sketchSide);
     bool filletCorner(int point, double r, const std::string& expr);
     int m_polySides = 6;
+    int m_rectMode = 0, m_circleMode = 0, m_arcMode = 1, m_polyMode = 0;
+    QPointF m_rectDir;        // drei Punkte Mittelpunkt: Seitenmitte
+    bool m_rectDirSet = false;
 
     // Dynamische Eingabe: Wertefelder am Mauszeiger
     struct DynField {

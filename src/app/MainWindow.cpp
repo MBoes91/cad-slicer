@@ -46,7 +46,9 @@
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
+#include <QGridLayout>
 #include <QMenu>
+#include <tuple>
 #include <QMessageBox>
 #include <QPainter>
 #include <QPainterPath>
@@ -81,7 +83,8 @@ namespace {
 // Einfache, selbst gezeichnete Symbole (keine fremden Grafiken).
 enum class Icon { Line, Arc, Dim, Finish, Cancel, Construction, Select, Pause, Sketch, Extrude, Revolve, Hole, Export, Home, Fit, Top, Front, Right, Slice, Save, Settings, Preview, Rect, Circle,
                   Pan, Zoom, Orbit, PrevView, NewDoc, OpenDoc, Disk, Measure, Update, PrintEnv, Shaded, Edges, Wire, Persp, EndOfPart, Close,
-                  Fillet, Chamfer, RectPattern, CircPattern, Mirror, Point, Shell, Polygon, Slot, SketchFillet };
+                  Fillet, Chamfer, RectPattern, CircPattern, Mirror, Point, Shell, Polygon, Slot, SketchFillet,
+                  Rect3, RectCenter, Rect3Center, CircleTangent, Arc3, ArcTangent, PolygonOut };
 
 QIcon makeIcon(Icon kind)
 {
@@ -313,6 +316,43 @@ QIcon makeIcon(Icon kind)
         p.setPen(QPen(blue, 3)); p.drawPolygon(poly);
         break;
     }
+    case Icon::Rect3: {
+        p.setPen(QPen(blue, 4));
+        const QPolygonF r({{8, 40}, {34, 14}, {56, 36}, {30, 62}});
+        p.drawPolygon(r);
+        p.setPen(Qt::NoPen); p.setBrush(orange);
+        for (const QPointF& q : {r[0], r[1], r[2]}) p.drawEllipse(q, 4, 4);
+        break;
+    }
+    case Icon::RectCenter: case Icon::Rect3Center: {
+        p.setPen(QPen(blue, 4)); p.drawRect(10, 16, 44, 32);
+        p.setPen(QPen(dark, 1.5, Qt::DashLine)); p.drawLine(10, 16, 54, 48); p.drawLine(54, 16, 10, 48);
+        p.setPen(Qt::NoPen); p.setBrush(orange);
+        p.drawEllipse(QPointF(32, 32), 4, 4); p.drawEllipse(QPointF(54, 48), 4, 4);
+        if (kind == Icon::Rect3Center) p.drawEllipse(QPointF(54, 32), 4, 4);
+        break;
+    }
+    case Icon::CircleTangent:
+        p.setPen(QPen(dark, 2)); p.drawLine(4, 54, 60, 54); p.drawLine(6, 58, 32, 4); p.drawLine(58, 58, 32, 4);
+        p.setPen(QPen(blue, 4)); p.drawEllipse(QPointF(32, 38), 14, 14);
+        break;
+    case Icon::Arc3:
+        p.setPen(QPen(blue, 4)); p.drawArc(QRect(10, 14, 44, 44), 0, 180 * 16);
+        p.setPen(Qt::NoPen); p.setBrush(orange);
+        p.drawEllipse(QPointF(10, 36), 4, 4); p.drawEllipse(QPointF(54, 36), 4, 4); p.drawEllipse(QPointF(32, 14), 4, 4);
+        break;
+    case Icon::ArcTangent:
+        p.setPen(QPen(dark, 3)); p.drawLine(4, 50, 30, 50);
+        p.setPen(QPen(blue, 4)); p.drawArc(QRectF(12, 14, 36, 36), 270 * 16, 180 * 16);
+        p.setPen(Qt::NoPen); p.setBrush(orange); p.drawEllipse(QPointF(30, 50), 4, 4);
+        break;
+    case Icon::PolygonOut: {
+        QPolygonF poly;
+        for (int i = 0; i < 6; ++i) poly << QPointF(32 + 26 * std::cos(i * M_PI / 3), 32 + 26 * std::sin(i * M_PI / 3));
+        p.setPen(QPen(blue, 3)); p.drawPolygon(poly);
+        p.setPen(QPen(dark, 1.5, Qt::DashLine)); p.drawEllipse(QPointF(32, 32), 22.5, 22.5);
+        break;
+    }
     case Icon::Slot:
         p.setPen(QPen(blue, 3)); p.drawRoundedRect(QRectF(6, 20, 52, 24), 12, 12);
         p.setPen(QPen(dark, 2, Qt::DashLine)); p.drawLine(18, 32, 46, 32);
@@ -385,9 +425,40 @@ QWidget* makePanel(const QString& title, const QList<QAction*>& actions)
         b->setIconSize(QSize(32, 32));
         b->setAutoRaise(true);
         b->setMinimumWidth(64);
+        if (a->menu()) { b->setPopupMode(QToolButton::MenuButtonPopup); b->setMinimumWidth(88); } // Erstellungsarten wie in Inventor
         row->addWidget(b);
     }
     v->addLayout(row);
+    auto* label = new QLabel(title);
+    label->setAlignment(Qt::AlignCenter);
+    label->setStyleSheet("color: #5a6270; font-size: 11px; border-top: 1px solid #d0d5dc; padding-top: 1px;");
+    v->addWidget(label);
+    return panel;
+}
+
+// Kleine Symbole in Zeilen (wie die Abhaengigkeiten in Inventor), Text als Tooltip
+QWidget* makeSmallPanel(const QString& title, const QList<QAction*>& actions, int rows = 3)
+{
+    auto* panel = new QWidget;
+    auto* v = new QVBoxLayout(panel);
+    v->setContentsMargins(4, 2, 4, 0);
+    v->setSpacing(0);
+    auto* grid = new QGridLayout;
+    grid->setSpacing(1);
+    const int cols = (static_cast<int>(actions.size()) + rows - 1) / rows;
+    for (int i = 0; i < actions.size(); ++i) {
+        QAction* a = actions[i];
+        auto* b = new QToolButton;
+        b->setDefaultAction(a);
+        b->setToolButtonStyle(Qt::ToolButtonIconOnly);
+        b->setIconSize(QSize(20, 20));
+        b->setAutoRaise(true);
+        if (a->toolTip().isEmpty() || a->toolTip() == a->text()) a->setToolTip(QString(a->text()).replace('\n', ' '));
+        grid->addWidget(b, i % rows, i / rows);
+    }
+    (void)cols;
+    v->addLayout(grid);
+    v->addStretch();
     auto* label = new QLabel(title);
     label->setAlignment(Qt::AlignCenter);
     label->setStyleSheet("color: #5a6270; font-size: 11px; border-top: 1px solid #d0d5dc; padding-top: 1px;");
@@ -933,6 +1004,39 @@ void MainWindow::buildRibbon()
     auto* sFillet = tool("Rundung", makeIcon(Icon::SketchFillet), SketchCanvas::Tool::SketchFillet);
     sFillet->setToolTip(QString::fromUtf8("Skizzenrundung: Ecke zwischen zwei Linien abrunden"));
     sPoint->setToolTip("Punkt: Mittelpunkt, z. B. für Bohrungen");
+    // Erstellungsarten: Pfeil am Knopf oeffnet die Auswahl, die gewaehlte Art wird zum Knopf
+    auto variants = [this](QAction* main, SketchCanvas::Tool t,
+                           const QList<std::tuple<QString, QIcon, int>>& items) {
+        auto* menu = new QMenu(this);
+        for (const auto& [text, icon, v] : items) {
+            auto* va = menu->addAction(icon, text);
+            connect(va, &QAction::triggered, this, [this, main, t, v, icon, text] {
+                m_canvas->setVariant(t, v);
+                main->setIcon(icon);
+                main->setToolTip(text);
+                main->setChecked(true);
+                m_canvas->setTool(t);
+                m_canvas->setVariant(t, v);
+                m_canvas->setFocus();
+            });
+        }
+        main->setMenu(menu);
+    };
+    variants(sRect, SketchCanvas::Tool::Rectangle, {
+        {QString::fromUtf8("Rechteck zwei Punkte"), makeIcon(Icon::Rect), 0},
+        {QString::fromUtf8("Rechteck drei Punkte"), makeIcon(Icon::Rect3), 1},
+        {QString::fromUtf8("Rechteck zwei Punkte Mittelpunkt"), makeIcon(Icon::RectCenter), 2},
+        {QString::fromUtf8("Rechteck drei Punkte Mittelpunkt"), makeIcon(Icon::Rect3Center), 3}});
+    variants(sCircle, SketchCanvas::Tool::Circle, {
+        {QString::fromUtf8("Kreis Mittelpunkt"), makeIcon(Icon::Circle), 0},
+        {QString::fromUtf8("Kreis tangential (drei Linien)"), makeIcon(Icon::CircleTangent), 1}});
+    variants(sArc, SketchCanvas::Tool::Arc, {
+        {QString::fromUtf8("Bogen drei Punkte"), makeIcon(Icon::Arc3), 0},
+        {QString::fromUtf8("Bogen Mittelpunkt"), makeIcon(Icon::Arc), 1},
+        {QString::fromUtf8("Bogen tangential"), makeIcon(Icon::ArcTangent), 2}});
+    variants(sPolygon, SketchCanvas::Tool::Polygon, {
+        {QString::fromUtf8("Polygon einbeschrieben (Ecken auf dem Kreis)"), makeIcon(Icon::Polygon), 0},
+        {QString::fromUtf8("Polygon umschrieben (Seiten berühren den Kreis)"), makeIcon(Icon::PolygonOut), 1}});
     auto* sDim = tool("Bemaßung", makeIcon(Icon::Dim), SketchCanvas::Tool::Dimension, "D");
     auto* cCoin = tool("Koinzident", textIcon(QString::fromUtf8("●")), SketchCanvas::Tool::Coincident);
     auto* cH = tool("Horizontal", textIcon("H"), SketchCanvas::Tool::Horizontal);
@@ -997,7 +1101,7 @@ void MainWindow::buildRibbon()
     m_sketchPage = makeRibbonPage({makePanel("Erstellen", {sSelect, sLine, sRect, sCircle, sArc, sPolygon, sSlot, sPoint}),
                                    makePanel("Ändern", {sFillet}),
                                    makePanel("Bemaßung", {sDim}),
-                                   makePanel("Abhängig machen", {cCoin, cH, cV, cPar, cPerp, cTan, cEq, cFix, cMid}),
+                                   makeSmallPanel("Abhängig machen", {cCoin, cH, cV, cPar, cPerp, cTan, cEq, cFix, cMid}),
                                    makePanel("Format", {sConstr, sShow}),
                                    makePanel("Beenden", {sFinish, sCancel})});
     m_ribbon->addTab(m_sketchPage, "Skizze");
