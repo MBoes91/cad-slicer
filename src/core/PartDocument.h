@@ -2,6 +2,7 @@
 
 #include "core/Features.h"
 #include "core/ModifyFeatures.h"
+#include "core/ImportFeature.h"
 #include "core/PrintModifier.h"
 
 #include <string>
@@ -79,9 +80,12 @@ public:
     std::string nextName(const std::string& prefix) const;
 
     bool exportStl(const std::string& path) const;
+    bool exportStep(const std::string& path) const { return fw::exportStep(m_body, path); }
 
     // Dateiformat .fwpart (Text, zeilenweise). fromText ersetzt den Inhalt.
-    std::string toText() const;
+    // embedImports: importierte Koerper vollstaendig einbetten (zum Speichern);
+    // sonst nur ihre Kennung (fuer Rueckgaengig, im selben Programmlauf)
+    std::string toText(bool embedImports = false) const;
     bool fromText(const std::string& text, std::string* error = nullptr);
     void clear(std::string name = "Bauteil1");
     void setName(std::string name) { m_name = std::move(name); }

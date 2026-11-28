@@ -231,7 +231,7 @@ std::string featureList(const std::vector<FeaturePtr>& fs)
 }
 
 // Neue Feature-Arten: Werte und Parameter generisch als ;p_<key>= ;x_<key>=
-void writeModifyFeature(std::ostream& o, const FeaturePtr& f)
+void writeModifyFeature(std::ostream& o, const FeaturePtr& f, bool embedImports)
 {
     if (auto h = std::dynamic_pointer_cast<HoleFeature>(f)) {
         o << "hole = " << safeName(h->name()) << ";sketch=" << safeName(h->sketch()->name())
@@ -249,6 +249,12 @@ void writeModifyFeature(std::ostream& o, const FeaturePtr& f)
           << ";s1=" << p->spacing1 << ";use2=" << (p->useDir2 ? 1 : 0) << ";dir2=" << static_cast<int>(p->dir2)
           << ";flip2=" << (p->flip2 ? 1 : 0) << ";n2=" << p->count2 << ";s2=" << p->spacing2
           << ";axis=" << static_cast<int>(p->axis) << ";n=" << p->count << ";angle=" << p->angle;
+    } else if (auto sh = std::dynamic_pointer_cast<ShellFeature>(f)) {
+        o << "shell = " << safeName(f->name()) << ";t=" << sh->thickness << ";outside=" << (sh->outside ? 1 : 0)
+          << ";faces=" << pointList(sh->faces);
+    } else if (auto im = std::dynamic_pointer_cast<ImportFeature>(f)) {
+        o << "import = " << safeName(f->name()) << ";source=" << esc(im->source()) << ";id=" << im->id();
+        if (embedImports) o << ";data=" << shapeToString(im->shape());
     } else if (auto m = std::dynamic_pointer_cast<MirrorFeature>(f)) {
         o << "mirror = " << safeName(f->name()) << ";plane=" << m->plane << ";features=" << featureList(m->sources);
     } else {
@@ -285,7 +291,7 @@ void PartDocument::clear(std::string name)
     m_errorMessage.clear();
 }
 
-std::string PartDocument::toText() const
+std::string PartDocument::toText(bool embedImports) const
 {
     std::ostringstream o;
     o.imbue(std::locale::classic());
@@ -331,7 +337,7 @@ std::string PartDocument::toText() const
             if (!r->angleRef().expr.empty()) o << ";expr=" << esc(r->angleRef().expr);
             o << '\n';
         } else {
-            writeModifyFeature(o, f);
+            writeModifyFeature(o, f, embedImports);
         }
     }
     for (const auto& m : m_modifiers)
@@ -466,7 +472,7 @@ bool PartDocument::fromText(const std::string& text, std::string* error)
                 if (auto r = std::dynamic_pointer_cast<RevolveFeature>(f)) r->angleRef() = ref;
                 features.push_back(f);
                 featuresByName[f->name()] = f;
-            } else if (key == "hole" || key == "fillet" || key == "chamfer" || key == "pattern" || key == "mirror") {
+            } else if (key == "hole" || key == "fillet" || key == "chamfer" || key == "pattern" || key == "mirror" || key == "shell" || key == "import") {
                 const auto a = attrs(parts);
                 auto get = [&](const char* k, double def) { return a.count(k) ? num(a.at(k)) : def; };
                 auto flag = [&](const char* k) { return a.count(k) && a.at(k) == "1"; };
@@ -525,6 +531,22 @@ bool PartDocument::fromText(const std::string& text, std::string* error)
                     p->count = static_cast<int>(get("n", 6));
                     p->angle = get("angle", 360);
                     f = p;
+                } else if (key == "import") {
+                    const std::string id = a.count("id") ? a.at("id") : std::string();
+                    TopoDS_Shape shape = a.count("data") ? shapeFromString(a.at("data")) : ImportFeature::cached(id);
+                    if (shape.IsNull()) throw std::invalid_argument("Importierter Koerper fehlt oder ist beschaedigt");
+                    f = std::make_shared<ImportFeature>(parts.at(0), shape, a.count("source") ? unesc(a.at("source")) : "", id);
+                } else if (key == "shell") {
+                    auto sh = std::make_shared<ShellFeature>(parts.at(0), num(need(a, "t")));
+                    sh->outside = flag("outside");
+                    if (a.count("faces"))
+                        for (const auto& pt : split(a.at("faces"), '/')) {
+                            if (pt.empty()) continue;
+                            const auto v = split(pt, ',');
+                            if (v.size() != 3) throw std::invalid_argument("Ungueltige Flaeche");
+                            sh->faces.emplace_back(num(v[0]), num(v[1]), num(v[2]));
+                        }
+                    f = sh;
                 } else {
                     auto m = std::make_shared<MirrorFeature>(parts.at(0));
                     m->plane = static_cast<int>(get("plane", 2));

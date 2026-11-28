@@ -10,7 +10,7 @@
 
 namespace fw {
 
-enum class FeatureType { Sketch, Extrude, Revolve, Hole, Fillet, Chamfer, Pattern, Mirror };
+enum class FeatureType { Sketch, Extrude, Revolve, Hole, Fillet, Chamfer, Pattern, Mirror, Shell, Import };
 
 // Ein Zahlenwert eines Features, der als Modellparameter (fx) erscheint
 struct ParamSlot {

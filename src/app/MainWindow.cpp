@@ -19,6 +19,7 @@
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <GCPnts_TangentialDeflection.hxx>
 #include <TopExp.hxx>
+#include <TopExp_Explorer.hxx>
 #include <TopTools_IndexedMapOfShape.hxx>
 #include <TopoDS.hxx>
 #include <gp_Pln.hxx>
@@ -59,6 +60,7 @@
 #include <QSettings>
 #include <QCheckBox>
 #include <QSpinBox>
+#include <QInputDialog>
 #include <BRepExtrema_DistShapeShape.hxx>
 #include <BRepBuilderAPI_MakeVertex.hxx>
 #include <QSlider>
@@ -78,7 +80,7 @@ namespace {
 // Einfache, selbst gezeichnete Symbole (keine fremden Grafiken).
 enum class Icon { Line, Arc, Dim, Finish, Cancel, Construction, Select, Pause, Sketch, Extrude, Revolve, Hole, Export, Home, Fit, Top, Front, Right, Slice, Save, Settings, Preview, Rect, Circle,
                   Pan, Zoom, Orbit, PrevView, NewDoc, OpenDoc, Disk, Measure, Update, PrintEnv, Shaded, Edges, Wire, Persp, EndOfPart, Close,
-                  Fillet, Chamfer, RectPattern, CircPattern, Mirror, Point };
+                  Fillet, Chamfer, RectPattern, CircPattern, Mirror, Point, Shell, Polygon, Slot, SketchFillet };
 
 QIcon makeIcon(Icon kind)
 {
@@ -303,6 +305,25 @@ QIcon makeIcon(Icon kind)
         p.setBrush(QColor(190, 210, 238)); p.setPen(QPen(dark, 2, Qt::DashLine));
         p.drawPolygon(QPolygon({{58, 50}, {38, 50}, {38, 14}}));
         p.setPen(QPen(orange, 3, Qt::DashDotLine)); p.drawLine(32, 4, 32, 60);
+        break;
+    case Icon::Polygon: {
+        QPolygonF poly;
+        for (int i = 0; i < 6; ++i) poly << QPointF(32 + 22 * std::cos(i * M_PI / 3), 32 + 22 * std::sin(i * M_PI / 3));
+        p.setPen(QPen(blue, 3)); p.drawPolygon(poly);
+        break;
+    }
+    case Icon::Slot:
+        p.setPen(QPen(blue, 3)); p.drawRoundedRect(QRectF(6, 20, 52, 24), 12, 12);
+        p.setPen(QPen(dark, 2, Qt::DashLine)); p.drawLine(18, 32, 46, 32);
+        break;
+    case Icon::SketchFillet:
+        p.setPen(QPen(blue, 3)); p.drawLine(10, 56, 10, 30); p.drawLine(34, 8, 56, 8);
+        p.setPen(QPen(orange, 4)); p.drawArc(QRectF(10, 8, 48, 44), 90 * 16, 90 * 16);
+        break;
+    case Icon::Shell:
+        p.setBrush(QColor(150, 185, 230));
+        p.drawPolygon(QPolygon({{8, 20}, {8, 56}, {56, 56}, {56, 20}, {48, 20}, {48, 48}, {16, 48}, {16, 20}}));
+        p.setPen(QPen(orange, 3)); p.drawLine(16, 20, 48, 20);
         break;
     case Icon::Point:
         p.setPen(QPen(blue, 3)); p.setBrush(Qt::NoBrush);
@@ -808,6 +829,8 @@ void MainWindow::buildRibbon()
     auto* aHole = act("Bohrung", Icon::Hole, QKeySequence("H"), [this] { cmdHole(); });
     auto* aFillet = act("Rundung", Icon::Fillet, QKeySequence("F"), [this] { cmdEdgeFeature(true); });
     auto* aChamfer = act("Fase", Icon::Chamfer, QKeySequence("Ctrl+Shift+K"), [this] { cmdEdgeFeature(false); });
+    auto* aShell = act("Wandung", Icon::Shell, {}, [this] { cmdShell(); });
+    aShell->setToolTip(QString::fromUtf8("Wandung: Körper aushöhlen, gewählte Flächen bleiben offen"));
     auto* aRectPat = act("Rechteckig", Icon::RectPattern, QKeySequence("Ctrl+Shift+R"), [this] { cmdPattern(false); });
     auto* aCircPat = act("Rund", Icon::CircPattern, QKeySequence("Ctrl+Shift+O"), [this] { cmdPattern(true); });
     auto* aMirror = act("Spiegeln", Icon::Mirror, QKeySequence("Ctrl+Shift+M"), [this] { cmdMirror(); });
@@ -815,7 +838,7 @@ void MainWindow::buildRibbon()
     aCircPat->setToolTip("Runde Anordnung (Ctrl+Shift+O)");
     m_actHole = aHole; m_actFillet = aFillet; m_actChamfer = aChamfer;
     auto* aPrintEnv = act("3D-Druck", Icon::PrintEnv, {}, [this] { enterPrintEnvironment(); });
-    for (QAction* a : {aSketch, aExtrude, aRevolve, aHole, aFillet, aChamfer, aRectPat, aCircPat, aMirror})
+    for (QAction* a : {aSketch, aExtrude, aRevolve, aHole, aFillet, aChamfer, aShell, aRectPat, aCircPat, aMirror})
         connect(a, &QAction::triggered, this, [this, a] { m_lastCommand = a; });
     aPrintEnv->setToolTip(QString::fromUtf8("3D-Druck-Umgebung: Druckeinstellungen, Modifikatoren, Slicen, G-Code"));
 
@@ -875,8 +898,8 @@ void MainWindow::buildRibbon()
 
     m_modelActions = {aZone, aEnforce, aBlock, aSketch, aExtrude, aRevolve, aHole, aSlice, m_previewAction, aSave,
                       aSettings, aEvent, aPrintEnv, aMeasure, aUpdate, aExitPrint, aParams,
-                      aFillet, aChamfer, aRectPat, aCircPat, aMirror};
-    m_docActions = {aSketch, aExtrude, aRevolve, aHole, aFillet, aChamfer, aRectPat, aCircPat, aMirror, aPrintEnv, aMeasure, aUpdate, aHome, aFit, aPrev, aPan, aZoom, aOrbit,
+                      aFillet, aChamfer, aShell, aRectPat, aCircPat, aMirror};
+    m_docActions = {aSketch, aExtrude, aRevolve, aHole, aFillet, aChamfer, aShell, aRectPat, aCircPat, aMirror, aPrintEnv, aMeasure, aUpdate, aHome, aFit, aPrev, aPan, aZoom, aOrbit,
                     aTop, aFront, aRight, aSlice, aSave, aEvent, aZone, aEnforce, aBlock, m_previewAction};
 
     // --- Skizze (kontextuelles Register, nur im Skizzenmodus sichtbar)
@@ -897,6 +920,17 @@ void MainWindow::buildRibbon()
     auto* sCircle = tool("Kreis", makeIcon(Icon::Circle), SketchCanvas::Tool::Circle, "C");
     auto* sArc = tool("Bogen", makeIcon(Icon::Arc), SketchCanvas::Tool::Arc, "A");
     auto* sPoint = tool("Punkt", makeIcon(Icon::Point), SketchCanvas::Tool::Point);
+    auto* sPolygon = tool("Polygon", makeIcon(Icon::Polygon), SketchCanvas::Tool::Polygon);
+    connect(sPolygon, &QAction::triggered, this, [this] {
+        bool ok = false;
+        const int n = QInputDialog::getInt(this, "Polygon", "Anzahl der Ecken:", m_canvas->polygonSides(), 3, 64, 1, &ok);
+        if (ok) m_canvas->setPolygonSides(n);
+        m_canvas->setFocus();
+    });
+    auto* sSlot = tool("Langloch", makeIcon(Icon::Slot), SketchCanvas::Tool::Slot);
+    sSlot->setToolTip(QString::fromUtf8("Langloch (Mitte zu Mitte)"));
+    auto* sFillet = tool("Rundung", makeIcon(Icon::SketchFillet), SketchCanvas::Tool::SketchFillet);
+    sFillet->setToolTip(QString::fromUtf8("Skizzenrundung: Ecke zwischen zwei Linien abrunden"));
     sPoint->setToolTip("Punkt: Mittelpunkt, z. B. für Bohrungen");
     auto* sDim = tool("Bemaßung", makeIcon(Icon::Dim), SketchCanvas::Tool::Dimension, "D");
     auto* cCoin = tool("Koinzident", textIcon(QString::fromUtf8("●")), SketchCanvas::Tool::Coincident);
@@ -959,7 +993,8 @@ void MainWindow::buildRibbon()
     m_ribbon->setDocumentMode(true);
 
     // Kontextuelle Register stehen wie in Inventor ganz vorne
-    m_sketchPage = makeRibbonPage({makePanel("Erstellen", {sSelect, sLine, sRect, sCircle, sArc, sPoint}),
+    m_sketchPage = makeRibbonPage({makePanel("Erstellen", {sSelect, sLine, sRect, sCircle, sArc, sPolygon, sSlot, sPoint}),
+                                   makePanel("Ändern", {sFillet}),
                                    makePanel("Bemaßung", {sDim}),
                                    makePanel("Abhängig machen", {cCoin, cH, cV, cPar, cPerp, cTan, cEq, cFix, cMid}),
                                    makePanel("Format", {sConstr, sShow}),
@@ -980,11 +1015,16 @@ void MainWindow::buildRibbon()
 
     m_modelTabPage = makeRibbonPage({makePanel("Skizze", {aSketch}),
                                      makePanel("Erstellen", {aExtrude, aRevolve}),
-                                     makePanel("Ändern", {aHole, aFillet, aChamfer}),
+                                     makePanel("Ändern", {aHole, aFillet, aChamfer, aShell}),
                                      makePanel("Muster", {aRectPat, aCircPat, aMirror})});
     m_ribbon->addTab(m_modelTabPage, "3D-Modell");
     m_ribbon->addTab(makeRibbonPage({makePanel("Messen", {aMeasure})}), QString::fromUtf8("Prüfen"));
-    m_ribbon->addTab(makeRibbonPage({makePanel("Aktualisieren", {aUpdate}), makePanel("Parameter", {aParams})}), "Verwalten");
+    auto* aImportRibbon = act("Importieren", Icon::OpenDoc, {}, [this] { cmdImport(); });
+    aImportRibbon->setToolTip(QString::fromUtf8("STEP- oder STL-Datei als Körper einfügen"));
+    m_modelActions.push_back(aImportRibbon);
+    m_docActions.push_back(aImportRibbon);
+    m_ribbon->addTab(makeRibbonPage({makePanel("Aktualisieren", {aUpdate}), makePanel("Parameter", {aParams}),
+                                     makePanel("Einfügen", {aImportRibbon})}), "Verwalten");
     m_ribbon->addTab(makeRibbonPage({makePanel("Darstellung", {m_styleShaded, m_styleEdges, m_styleWire, aPersp}),
                                      makePanel("Navigieren", {aPan, aZoom, aOrbit, aFit, aPrev, aHome}),
                                      makePanel("Ansichten", {aTop, aFront, aRight})}),
@@ -1021,13 +1061,16 @@ void MainWindow::buildFileMenu()
     menu->addSeparator();
     auto* exportMenu = menu->addMenu(makeIcon(Icon::Export), "Exportieren");
     QAction* aStl = exportMenu->addAction("STL-Datei …", this, [this] { cmdExportStl(); });
+    QAction* aStep = exportMenu->addAction("STEP-Datei …", this, [this] { cmdExportStep(); });
+    auto* aImport = add(makeIcon(Icon::OpenDoc), "Importieren (STEP, STL) …", {}, [this] { cmdImport(); });
+    menu->insertAction(exportMenu->menuAction(), aImport);
     QAction* aGcode = exportMenu->addAction("G-Code …", this, [this] { cmdSaveGcode(); });
     menu->addSeparator();
     auto* aClose = add(makeIcon(Icon::Close), QString::fromUtf8("Schließen"), QKeySequence("Ctrl+W"), [this] { cmdCloseDoc(); });
     add(QIcon(), "Beenden", QKeySequence("Ctrl+Q"), [this] { close(); });
     fileButton->setMenu(menu);
     updateRecentMenu();
-    for (QAction* a : {aSave, aSaveAs, aStl, aGcode, aClose}) m_docActions.push_back(a);
+    for (QAction* a : {aSave, aSaveAs, aStl, aStep, aGcode, aClose}) m_docActions.push_back(a);
 
     m_undoAction = new QAction(style()->standardIcon(QStyle::SP_ArrowBack), QString::fromUtf8("Rückgängig"), this);
     m_undoAction->setShortcut(QKeySequence::Undo);
@@ -1299,7 +1342,10 @@ void MainWindow::displayModel()
         m_bodyAis = new AIS_Shape(m_doc.body());
         m_bodyAis->SetColor(Quantity_Color(0.72, 0.76, 0.82, Quantity_TOC_sRGB));
         m_bodyAis->SetMaterial(Graphic3d_NameOfMaterial_Steel);
-        m_bodyAis->Attributes()->SetFaceBoundaryDraw(m_visualStyle == 1);
+        // Importierte Dreiecksnetze: keine Dreieckskanten zeichnen (sonst wird alles schwarz)
+        int faceCount = 0;
+        for (TopExp_Explorer ex(m_doc.body(), TopAbs_FACE); ex.More() && faceCount <= 2000; ex.Next()) ++faceCount;
+        m_bodyAis->Attributes()->SetFaceBoundaryDraw(m_visualStyle == 1 && faceCount <= 2000);
         m_bodyAis->Attributes()->SetFaceBoundaryAspect(
             new Prs3d_LineAspect(Quantity_NOC_GRAY15, Aspect_TOL_SOLID, 1.0));
         ctx->Display(m_bodyAis, m_visualStyle == 2 ? AIS_WireFrame : AIS_Shaded, 0, false);
@@ -1412,6 +1458,8 @@ void MainWindow::refreshBrowser()
         else if (f->type() == fw::FeatureType::Fillet) icon = Icon::Fillet;
         else if (f->type() == fw::FeatureType::Chamfer) icon = Icon::Chamfer;
         else if (f->type() == fw::FeatureType::Mirror) icon = Icon::Mirror;
+        else if (f->type() == fw::FeatureType::Shell) icon = Icon::Shell;
+        else if (f->type() == fw::FeatureType::Import) icon = Icon::OpenDoc;
         else if (auto pt = std::dynamic_pointer_cast<fw::PatternFeature>(f))
             icon = pt->kind == fw::PatternFeature::Kind::Circular ? Icon::CircPattern : Icon::RectPattern;
         else if (auto s = std::dynamic_pointer_cast<fw::Sketch>(f)) {
@@ -1725,6 +1773,19 @@ void MainWindow::cmdEdgeFeature(bool fillet)
     beginFeatureEdit(f, true, backup);
 }
 
+void MainWindow::cmdShell()
+{
+    if (m_editFeature || m_pickingPlane) return;
+    if (m_doc.body().IsNull()) {
+        QMessageBox::information(this, "Wandung", QString::fromUtf8("Zuerst einen Körper erstellen."));
+        return;
+    }
+    const std::string backup = m_doc.toText();
+    auto sh = std::make_shared<fw::ShellFeature>(m_doc.nextName("Wandung"), 2.0);
+    m_doc.addFeature(sh);
+    beginFeatureEdit(sh, true, backup);
+}
+
 void MainWindow::cmdPattern(bool circular)
 {
     if (m_editFeature || m_pickingPlane) return;
@@ -1758,6 +1819,7 @@ void MainWindow::cmdMirror()
 }
 
 namespace {
+QIcon directionIcon(int kind); // weiter unten
 // Querschnitt einer Bohrungsart fuer die Palette
 QIcon holeTypeIcon(int kind)
 {
@@ -1924,6 +1986,32 @@ bool MainWindow::buildModifyPanel(const fw::FeaturePtr& f)
         return true;
     }
 
+    if (auto sh = std::dynamic_pointer_cast<fw::ShellFeature>(f)) {
+        m_panel->begin(makeIcon(Icon::Shell), QString::fromUtf8("Wandung  ›  %1").arg(name));
+        auto* sec = m_panel->addSection("Flächen entfernen");
+        m_edgeCount = new QLabel;
+        sec->addRow("Gewählt", m_edgeCount);
+        auto* clear = new QPushButton("Auswahl aufheben");
+        sec->addRow("", clear);
+        auto* beh = m_panel->addSection("Verhalten");
+        auto* dirGroup = new QButtonGroup(m_panel);
+        beh->addRow("Richtung", PropertyPanel::choiceRow(dirGroup,
+            {{directionIcon(1), "Innen"}, {directionIcon(0), QString::fromUtf8("Außen")}}, sh->outside ? 1 : 0));
+        auto* t = paramEdit(f, "t", sh->thickness, "mm", evaluator());
+        beh->addRow("Dicke", t);
+        connect(clear, &QPushButton::clicked, m_panel, [this, sh] { sh->faces.clear(); previewFeature(); });
+        auto apply = [this, sh, f, t, dirGroup] {
+            sh->thickness = t->value();
+            sh->outside = dirGroup->checkedId() == 1;
+            storeExpr(f, "t", t);
+            schedulePreview();
+        };
+        connect(t, &ValueEdit::valueEdited, m_panel, apply);
+        connect(dirGroup, &QButtonGroup::idClicked, m_panel, apply);
+        m_editDistance = t;
+        return true;
+    }
+
     if (auto p = std::dynamic_pointer_cast<fw::PatternFeature>(f)) {
         const bool circ = p->kind == fw::PatternFeature::Kind::Circular;
         m_panel->begin(makeIcon(circ ? Icon::CircPattern : Icon::RectPattern),
@@ -2057,67 +2145,94 @@ void MainWindow::clearEdgeSelection()
     m_edgeCount = nullptr;
 }
 
+// Gewaehlte Kanten bzw. Flaechen des Feature in Bearbeitung (Rundung/Fase bzw. Wandung)
+std::vector<gp_Pnt>* MainWindow::pickPoints() const
+{
+    if (auto e = std::dynamic_pointer_cast<fw::EdgeFeature>(m_editFeature)) return &e->edges;
+    if (auto sh = std::dynamic_pointer_cast<fw::ShellFeature>(m_editFeature)) return &sh->faces;
+    return nullptr;
+}
+
 void MainWindow::showEdgeSelection()
 {
-    auto e = std::dynamic_pointer_cast<fw::EdgeFeature>(m_editFeature);
+    std::vector<gp_Pnt>* pts = pickPoints();
+    const bool faces = std::dynamic_pointer_cast<fw::ShellFeature>(m_editFeature) != nullptr;
     const auto& ctx = m_view->context();
-    if (!e || ctx.IsNull()) return;
+    if (!pts || ctx.IsNull()) return;
     QLabel* count = m_edgeCount;
     clearEdgeSelection();
     m_edgeCount = count;
 
-    // Kanten des Koerpers vor der Rundung waehlbar machen; der Vorschaukoerper selbst nicht
+    // Kanten/Flaechen des Koerpers vor dem Feature waehlbar machen; der Vorschaukoerper selbst nicht
     const TopoDS_Shape base = m_doc.bodyBefore(m_editFeature);
     if (base.IsNull()) return;
     if (!m_bodyAis.IsNull()) ctx->Deactivate(m_bodyAis);
     m_edgeBaseAis = new AIS_Shape(base);
     m_edgeBaseAis->SetColor(Quantity_NOC_GRAY30);
     m_edgeBaseAis->SetWidth(1.5);
-    ctx->Display(m_edgeBaseAis, AIS_WireFrame, AIS_Shape::SelectionMode(TopAbs_EDGE), false);
-    // Flaechen ebenfalls waehlbar: sie verdecken Kanten auf der Rueckseite (Klick auf eine Flaeche waehlt nichts)
-    ctx->Activate(m_edgeBaseAis, AIS_Shape::SelectionMode(TopAbs_FACE));
+    if (faces) {
+        ctx->Display(m_edgeBaseAis, AIS_WireFrame, AIS_Shape::SelectionMode(TopAbs_FACE), false);
+    } else {
+        ctx->Display(m_edgeBaseAis, AIS_WireFrame, AIS_Shape::SelectionMode(TopAbs_EDGE), false);
+        // Flaechen ebenfalls waehlbar: sie verdecken Kanten auf der Rueckseite (Klick auf eine Flaeche waehlt nichts)
+        ctx->Activate(m_edgeBaseAis, AIS_Shape::SelectionMode(TopAbs_FACE));
+    }
 
-    // Gewaehlte Kanten hervorheben
-    TopTools_IndexedMapOfShape map;
-    TopExp::MapShapes(base, TopAbs_EDGE, map);
+    // Auswahl hervorheben
     TopoDS_Compound comp;
     BRep_Builder bb;
     bb.MakeCompound(comp);
     int found = 0;
-    for (const gp_Pnt& p : e->edges) {
-        const TopoDS_Shape v = BRepBuilderAPI_MakeVertex(p).Shape();
-        for (int i = 1; i <= map.Extent(); ++i) {
-            BRepExtrema_DistShapeShape d(v, map(i));
-            if (d.IsDone() && d.Value() < 0.5) { bb.Add(comp, map(i)); ++found; break; }
+    if (faces) {
+        for (const gp_Pnt& p : *pts) {
+            const TopoDS_Shape f = fw::faceAt(base, p, 0.5);
+            if (!f.IsNull()) { bb.Add(comp, f); ++found; }
+        }
+    } else {
+        TopTools_IndexedMapOfShape map;
+        TopExp::MapShapes(base, TopAbs_EDGE, map);
+        for (const gp_Pnt& p : *pts) {
+            const TopoDS_Shape v = BRepBuilderAPI_MakeVertex(p).Shape();
+            for (int i = 1; i <= map.Extent(); ++i) {
+                BRepExtrema_DistShapeShape d(v, map(i));
+                if (d.IsDone() && d.Value() < 0.5) { bb.Add(comp, map(i)); ++found; break; }
+            }
         }
     }
     if (found) {
         m_edgeSelAis = new AIS_Shape(comp);
         m_edgeSelAis->SetColor(Quantity_Color(0.10, 0.45, 0.95, Quantity_TOC_sRGB));
-        m_edgeSelAis->SetWidth(4.0);
-        m_edgeSelAis->SetZLayer(Graphic3d_ZLayerId_Topmost);
-        ctx->Display(m_edgeSelAis, AIS_WireFrame, -1, false);
+        if (faces) {
+            m_edgeSelAis->SetTransparency(0.45);
+            ctx->Display(m_edgeSelAis, AIS_Shaded, -1, false);
+        } else {
+            m_edgeSelAis->SetWidth(4.0);
+            m_edgeSelAis->SetZLayer(Graphic3d_ZLayerId_Topmost);
+            ctx->Display(m_edgeSelAis, AIS_WireFrame, -1, false);
+        }
     }
-    if (m_edgeCount) m_edgeCount->setText(QString::fromUtf8("%1 Kante(n)").arg(e->edges.size()));
+    if (m_edgeCount)
+        m_edgeCount->setText(faces ? QString::fromUtf8("%1 Fläche(n)").arg(pts->size())
+                                   : QString::fromUtf8("%1 Kante(n)").arg(pts->size()));
 }
 
 bool MainWindow::pickEdge(const Handle(AIS_InteractiveObject)& picked)
 {
-    auto e = std::dynamic_pointer_cast<fw::EdgeFeature>(m_editFeature);
+    std::vector<gp_Pnt>* pts = pickPoints();
+    const bool faces = std::dynamic_pointer_cast<fw::ShellFeature>(m_editFeature) != nullptr;
     const auto& ctx = m_view->context();
-    if (!e || m_edgeBaseAis.IsNull() || picked != m_edgeBaseAis || !ctx->HasDetectedShape()) return false;
+    if (!pts || m_edgeBaseAis.IsNull() || picked != m_edgeBaseAis || !ctx->HasDetectedShape()) return false;
     const TopoDS_Shape s = ctx->DetectedShape();
-    if (s.ShapeType() != TopAbs_EDGE) return false;
-    const TopoDS_Edge edge = TopoDS::Edge(s);
+    if (s.ShapeType() != (faces ? TopAbs_FACE : TopAbs_EDGE)) return false;
     // Bereits gewaehlt? Dann wieder entfernen
-    for (auto it = e->edges.begin(); it != e->edges.end(); ++it) {
-        BRepExtrema_DistShapeShape d(BRepBuilderAPI_MakeVertex(*it).Shape(), edge);
-        if (d.IsDone() && d.Value() < 0.5) {
-            e->edges.erase(it);
+    for (auto it = pts->begin(); it != pts->end(); ++it) {
+        BRepExtrema_DistShapeShape d(BRepBuilderAPI_MakeVertex(*it).Shape(), s);
+        if (d.IsDone() && d.Value() < (faces ? 0.05 : 0.5)) {
+            pts->erase(it);
             return true; // Vorschau folgt beim Loslassen
         }
     }
-    e->edges.push_back(fw::edgeMidpoint(edge));
+    pts->push_back(faces ? fw::facePoint(TopoDS::Face(s)) : fw::edgeMidpoint(TopoDS::Edge(s)));
     return true;
 }
 
@@ -2126,6 +2241,8 @@ void MainWindow::cmdEditFeature(const fw::FeaturePtr& f)
     if (m_editFeature) return;
     if (auto s = std::dynamic_pointer_cast<fw::Sketch>(f)) {
         enterSketch(s, false);
+    } else if (f->type() == fw::FeatureType::Import) {
+        statusBar()->showMessage(QString::fromUtf8("Importierte Körper haben keine bearbeitbaren Werte."), 5000);
     } else {
         beginFeatureEdit(f, false, m_doc.toText());
     }
@@ -2285,7 +2402,7 @@ void MainWindow::beginFeatureEdit(const fw::FeaturePtr& f, bool isNew, const std
     // Ziehpfeil fuer den Extrusionsabstand
     m_view->setDragHandler({
         [this](const Handle(AIS_InteractiveObject)& o) {
-            if (std::dynamic_pointer_cast<fw::EdgeFeature>(m_editFeature)) return pickEdge(o);
+            if (pickPoints()) return pickEdge(o);
             if (m_arrowAis.IsNull() || o != m_arrowAis || !m_editDistance) return false;
             auto e = std::dynamic_pointer_cast<fw::ExtrudeFeature>(m_editFeature);
             m_dragStartValue = e ? e->distance() : 0.0;
@@ -2314,11 +2431,13 @@ void MainWindow::previewFeature()
         m_panel->setMessage(QString::fromUtf8("Tipp: Pfeil im Grafikfenster ziehen, um den Abstand zu ändern."), false);
     } else if (std::dynamic_pointer_cast<fw::EdgeFeature>(m_editFeature)) {
         m_panel->setMessage(QString::fromUtf8("Kanten im Grafikfenster anklicken, erneuter Klick entfernt sie."), false);
+    } else if (std::dynamic_pointer_cast<fw::ShellFeature>(m_editFeature)) {
+        m_panel->setMessage(QString::fromUtf8("Flächen anklicken, die offen bleiben sollen. Ohne Auswahl entsteht ein geschlossener Hohlkörper."), false);
     } else {
         m_panel->setMessage({}, false);
     }
     updateArrow();
-    if (std::dynamic_pointer_cast<fw::EdgeFeature>(m_editFeature)) showEdgeSelection();
+    if (pickPoints()) showEdgeSelection();
     if (m_panelDock->height() < m_panel->sizeHint().height())
         resizeDocks({m_panelDock}, {m_panel->sizeHint().height()}, Qt::Vertical);
     m_view->redraw();
@@ -2721,12 +2840,78 @@ void MainWindow::cmdOpen()
 {
     if (!maybeSave()) return;
     const QString path = QFileDialog::getOpenFileName(this, QString::fromUtf8("Bauteil öffnen"),
-        QSettings().value("letzterOrdner").toString(), "FormWerk-Bauteil (*.fwpart)");
+        QSettings().value("letzterOrdner").toString(),
+        QString::fromUtf8("Alle unterstützten (*.fwpart *.step *.stp *.stl);;FormWerk-Bauteil (*.fwpart);;STEP (*.step *.stp);;STL (*.stl)"));
     if (!path.isEmpty()) openFile(path);
+}
+
+// Liest STEP/STL mit Wartecursor; leerer Koerper bei Fehler (Meldung wurde gezeigt)
+TopoDS_Shape MainWindow::readModelFile(const QString& path)
+{
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    statusBar()->showMessage(QString::fromUtf8("Lese %1 …").arg(QFileInfo(path).fileName()));
+    QApplication::processEvents();
+    TopoDS_Shape s;
+    QString error;
+    try {
+        s = fw::importShape(QFile::encodeName(path).toStdString());
+    } catch (const std::exception& e) {
+        error = QString::fromUtf8(e.what());
+    } catch (...) {
+        error = QString::fromUtf8("Geometriefehler beim Einlesen");
+    }
+    QApplication::restoreOverrideCursor();
+    statusBar()->clearMessage();
+    if (s.IsNull())
+        QMessageBox::warning(this, "Importieren", QString::fromUtf8("%1 konnte nicht importiert werden.\n%2")
+                                                      .arg(QFileInfo(path).fileName(), error));
+    return s;
+}
+
+void MainWindow::cmdImport()
+{
+    if (m_editFeature || m_pickingPlane) return;
+    const QString path = QFileDialog::getOpenFileName(this, "Importieren", QSettings().value("letzterOrdner").toString(),
+        "3D-Modelle (*.step *.stp *.stl);;STEP (*.step *.stp);;STL (*.stl)");
+    if (path.isEmpty()) return;
+    if (!m_docOpen) { openFile(path); return; }
+    const TopoDS_Shape s = readModelFile(path);
+    if (s.IsNull()) return;
+    m_doc.addFeature(std::make_shared<fw::ImportFeature>(m_doc.nextName("Import"), s, QFileInfo(path).fileName().toStdString()));
+    rebuild(true);
+}
+
+void MainWindow::cmdExportStep()
+{
+    if (m_doc.body().IsNull()) return;
+    const QString path = QFileDialog::getSaveFileName(this, "STEP exportieren",
+        QString::fromStdString(m_doc.name()) + ".step", "STEP-Dateien (*.step *.stp)");
+    if (path.isEmpty()) return;
+    if (!m_doc.exportStep(QFile::encodeName(path).toStdString()))
+        QMessageBox::warning(this, "STEP exportieren", "Die Datei konnte nicht geschrieben werden.");
 }
 
 bool MainWindow::openFile(const QString& path)
 {
+    const QString ext = QFileInfo(path).suffix().toLower();
+    if (ext == "step" || ext == "stp" || ext == "stl") {
+        // Fremdes Modell: neues Bauteil mit dem importierten Koerper
+        if (!maybeSave()) return false;
+        const TopoDS_Shape s = readModelFile(path);
+        if (s.IsNull()) return false;
+        endFeatureEdit(false);
+        if (m_editSketch) finishSketch(false);
+        exitPrintEnvironment();
+        m_doc.clear(QFileInfo(path).completeBaseName().toStdString());
+        m_doc.addFeature(std::make_shared<fw::ImportFeature>("Import1", s, QFileInfo(path).fileName().toStdString()));
+        m_filePath.clear();
+        m_slice = fw::SliceResult{};
+        resetHistory();
+        m_docOpen = true;
+        showModel();
+        QTimer::singleShot(0, this, [this] { rebuild(true); m_modified = true; updateTitle(); });
+        return true;
+    }
     QFile f(path);
     std::string err;
     fw::PartDocument tmp;
@@ -2781,7 +2966,7 @@ bool MainWindow::writeFile(const QString& path)
         QMessageBox::warning(this, "Speichern", "Die Datei konnte nicht geschrieben werden.");
         return false;
     }
-    f.write(QByteArray::fromStdString(m_doc.toText()));
+    f.write(QByteArray::fromStdString(m_doc.toText(true)));
     m_modified = false;
     updateTitle();
     addRecent(path);

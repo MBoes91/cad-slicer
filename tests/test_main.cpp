@@ -5,6 +5,8 @@
 #include "slicer/Slicer.h"
 
 #include <BRepGProp.hxx>
+#include <TopExp_Explorer.hxx>
+#include <TopoDS.hxx>
 #include <GProp_GProps.hxx>
 
 #include <cmath>
@@ -473,6 +475,59 @@ static void testModifyFeatures()
     CHECK(std::abs(volume(d2.body()) - (M_PI * 900 * 5 - 6 * M_PI * 4 * 5)) < 2.0);
 }
 
+static void testShell()
+{
+    fw::PartDocument doc;
+    auto sk = std::make_shared<fw::Sketch>("Skizze1", fw::SketchPlane::XY);
+    sk->addRectangle(0, 0, 40, 30);
+    doc.addFeature(sk);
+    doc.addFeature(std::make_shared<fw::ExtrudeFeature>("Extrusion1", sk, 20.0));
+    auto sh = std::make_shared<fw::ShellFeature>("Wandung1", 2.0);
+    sh->faces = {gp_Pnt(20, 15, 20)}; // Deckel offen
+    doc.addFeature(sh);
+    CHECK(doc.recompute());
+    CHECK(std::abs(volume(doc.body()) - (40 * 30 * 20 - 36 * 26 * 18)) < 1.0);
+    // ohne offene Flaeche: geschlossener Hohlkoerper
+    sh->faces.clear();
+    CHECK(doc.recompute());
+    CHECK(std::abs(volume(doc.body()) - (40 * 30 * 20 - 36 * 26 * 16)) < 1.0);
+    sh->faces = {gp_Pnt(20, 15, 20)};
+    fw::PartDocument copy;
+    CHECK(copy.fromText(doc.toText()));
+    CHECK(copy.toText() == doc.toText());
+    // Punkt auf einer Flaeche
+    TopExp_Explorer ex(doc.body(), TopAbs_FACE);
+    const TopoDS_Face f = TopoDS::Face(ex.Current());
+    CHECK(fw::faceAt(doc.body(), fw::facePoint(f)).IsSame(f));
+}
+
+static void testImportExport()
+{
+    fw::PartDocument doc;
+    auto sk = std::make_shared<fw::Sketch>("Skizze1", fw::SketchPlane::XY);
+    sk->addRectangle(0, 0, 20, 10);
+    doc.addFeature(sk);
+    doc.addFeature(std::make_shared<fw::ExtrudeFeature>("Extrusion1", sk, 5.0));
+    CHECK(doc.recompute());
+    const std::string step = "/tmp/formwerk_test.step", stl = "/tmp/formwerk_test.stl";
+    CHECK(doc.exportStep(step));
+    CHECK(doc.exportStl(stl));
+    for (const auto& path : {step, stl}) {
+        fw::PartDocument d2;
+        TopoDS_Shape s;
+        try { s = fw::importShape(path); } catch (const std::exception& e) { std::printf("Import: %s\n", e.what()); }
+        CHECK(!s.IsNull());
+        d2.addFeature(std::make_shared<fw::ImportFeature>("Import1", s, path));
+        CHECK(d2.recompute());
+        CHECK(std::abs(volume(d2.body()) - 1000.0) < 1.0);
+        fw::PartDocument d3;
+        CHECK(d3.fromText(d2.toText(true)));
+        CHECK(d2.toText(true).size() > d2.toText().size() + 1000);
+        CHECK(d3.recompute());
+        CHECK(std::abs(volume(d3.body()) - 1000.0) < 1.0);
+    }
+}
+
 void testEndOfPart()
 {
     fw::PartDocument doc;
@@ -576,6 +631,8 @@ int main()
     testParameters();
     testEndOfPart();
     testModifyFeatures();
+    testShell();
+    testImportExport();
     testCustomPlane();
     testModifiers();
     testSketchSolver();

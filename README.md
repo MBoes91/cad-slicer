@@ -8,6 +8,7 @@ Technik: C++17, Qt 6 (Oberfläche), OpenCascade (CAD-Kernel), Clipper (2D-Polygo
 ![Modell](docs/modell.png)
 ![Skizze](docs/skizze.png)
 ![Muster und Bohrung](docs/muster-bohrung.png)
+![Wandung](docs/wandung.png)
 ![Druckvorschau](docs/druckvorschau.png)
 
 ## Stand (Version 0.1)
@@ -28,6 +29,9 @@ Technik: C++17, Qt 6 (Oberfläche), OpenCascade (CAD-Kernel), Clipper (2D-Polygo
 - Extrusion (Verbinden, Differenz, Schnittmenge, symmetrisch), Drehung um eine Skizzenachse
 - Bohrung an Skizzenpunkten (neues Skizzenwerkzeug *Punkt*, sonst Kreismitten): einfach, Senkung, Kegelsenkung, Tiefe oder durch alle, Bohrspitze 118°
 - Rundung und Fase: Kanten im 3D-Fenster anklicken (erneuter Klick entfernt sie), Radius/Abstand mit Live-Vorschau
+- Wandung: Körper aushöhlen (innen/außen), Flächen anklicken, die offen bleiben; ohne Auswahl geschlossener Hohlkörper
+- Skizzenwerkzeuge Polygon (beliebige Eckenzahl), Langloch (Mitte zu Mitte) und Rundung an Ecken (tangential, Radius bemaßt)
+- Import von STEP- und STL-Dateien (Datei ▸ Öffnen oder Verwalten ▸ Importieren), z. B. um heruntergeladene Modelle zu slicen; Export als STEP und STL
 - Rechteckige und runde Anordnung von Extrusionen, Drehungen und Bohrungen; Spiegeln von Features oder des ganzen Körpers an XY/XZ/YZ
 - Datei als Programmargument öffnen (z. B. Doppelklick auf `.fwpart` unter Windows)
 - Parametrische Neuberechnung: Maß ändern, Modell baut sich neu auf

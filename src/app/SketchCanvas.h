@@ -16,7 +16,7 @@ class SketchCanvas : public QWidget {
     Q_OBJECT
 public:
     enum class Tool {
-        Select, Line, Rectangle, Circle, Arc, Point, Dimension,
+        Select, Line, Rectangle, Circle, Arc, Point, Polygon, Slot, SketchFillet, Dimension,
         Coincident, Horizontal, Vertical, Parallel, Perpendicular, Tangent, Equal, Fix, Midpoint
     };
 
@@ -39,6 +39,8 @@ public:
     void deleteSelection();
     void fit();
     void setShowConstraints(bool on) { m_showConstraints = on; update(); }
+    void setPolygonSides(int n) { m_polySides = std::max(3, n); }
+    int polygonSides() const { return m_polySides; }
 
 signals:
     void statusChanged(const QString& text);
@@ -91,6 +93,10 @@ private:
     int lineTo(int p, bool closeChain);     // liefert neue Linie oder -1
     std::array<int, 4> rectTo(int p);       // liefert die vier Linien oder -1
     int circleTo(double r);                 // liefert den Kreis oder -1
+    void polygonTo(const QPointF& sketchCorner);
+    void slotTo(const QPointF& sketchSide);
+    bool filletCorner(int point, double r, const std::string& expr);
+    int m_polySides = 6;
 
     // Dynamische Eingabe: Wertefelder am Mauszeiger
     struct DynField {

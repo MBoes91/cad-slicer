@@ -92,6 +92,11 @@ private:
     void cmdEdgeFeature(bool fillet);
     void cmdPattern(bool circular);
     void cmdMirror();
+    void cmdShell();
+    void cmdImport();
+    void cmdExportStep();
+    TopoDS_Shape readModelFile(const QString& path);
+    std::vector<gp_Pnt>* pickPoints() const;
     // Palette der Aenderungs-Features (Bohrung, Rundung/Fase, Muster, Spiegeln)
     bool buildModifyPanel(const fw::FeaturePtr& f);
     void showEdgeSelection();

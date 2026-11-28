@@ -718,6 +718,34 @@ void SketchCanvas::paintEvent(QPaintEvent*)
             p.drawEllipse(as, r, r);
             break;
         }
+        case Tool::Polygon: {
+            const QPointF cm = toSketch(m_mouse);
+            const double rr = std::hypot(cm.x() - a.x, cm.y() - a.y);
+            const double a0 = std::atan2(cm.y() - a.y, cm.x() - a.x);
+            QPolygonF poly;
+            for (int i = 0; i <= m_polySides; ++i) {
+                const double ang = a0 + 2 * M_PI * i / m_polySides;
+                poly << toScreen(a.x + rr * std::cos(ang), a.y + rr * std::sin(ang));
+            }
+            p.drawPolyline(poly);
+            break;
+        }
+        case Tool::Slot: {
+            if (m_pending.size() == 1) { p.drawLine(as, m_mouse); break; }
+            const auto& b = P[m_pending[1]];
+            const QPointF bs = toScreen(b.x, b.y);
+            const double len = std::hypot(bs.x() - as.x(), bs.y() - as.y());
+            if (len < 1e-6) break;
+            const QPointF n(-(bs.y() - as.y()) / len, (bs.x() - as.x()) / len);
+            const double w = std::abs((m_mouse - as).x() * n.x() + (m_mouse - as).y() * n.y());
+            QPainterPathStroker st;
+            st.setWidth(2 * w);
+            st.setCapStyle(Qt::RoundCap);
+            QPainterPath line(as);
+            line.lineTo(bs);
+            p.drawPath(st.createStroke(line));
+            break;
+        }
         case Tool::Arc: {
             if (m_pending.size() == 1) {
                 p.drawLine(as, m_mouse);
@@ -855,6 +883,26 @@ void SketchCanvas::mousePressEvent(QMouseEvent* e)
         resolve();
         break;
     }
+    case Tool::Polygon:
+        if (m_pending.empty()) m_pending.push_back(pickOrCreatePoint(pos));
+        else polygonTo(toSketch(pos));
+        break;
+    case Tool::Slot:
+        if (m_pending.size() < 2) {
+            const int p = pickOrCreatePoint(pos);
+            if (m_pending.empty() || p != m_pending[0]) m_pending.push_back(p);
+        } else {
+            slotTo(toSketch(pos));
+        }
+        break;
+    case Tool::SketchFillet: {
+        const int p = pointAt(pos);
+        if (p <= 0) { m_message = QString::fromUtf8("Rundung: Eckpunkt anklicken."); break; }
+        double r = 0;
+        std::string expr;
+        if (askValue(QString::fromUtf8("Rundung"), "Radius", "2", r, expr) && r > 0) filletCorner(p, r, expr);
+        break;
+    }
     case Tool::Point: {
         const int p = pickOrCreatePoint(pos);
         if (p > 0) m_geo.points[static_cast<size_t>(p)].center = true;
@@ -901,6 +949,121 @@ std::array<int, 4> SketchCanvas::rectTo(int p)
     m_pending.clear();
     resolve();
     return {l0, l1, l2, l3};
+}
+
+// Regelmaessiges Vieleck: Ecken auf einem Konstruktionskreis, alle Seiten gleich lang
+void SketchCanvas::polygonTo(const QPointF& corner)
+{
+    if (m_pending.empty()) return;
+    const int center = m_pending[0];
+    const auto c = m_geo.points[static_cast<size_t>(center)];
+    const double r = std::hypot(corner.x() - c.x, corner.y() - c.y);
+    if (r < 1e-6) return;
+    const double a0 = std::atan2(corner.y() - c.y, corner.x() - c.x);
+    const int n = m_polySides;
+    std::vector<int> pts;
+    for (int i = 0; i < n; ++i) {
+        const double a = a0 + 2 * M_PI * i / n;
+        pts.push_back(m_geo.addPoint(c.x + r * std::cos(a), c.y + r * std::sin(a)));
+    }
+    const int circle = m_geo.addCircle(center, r, true);
+    std::vector<int> lines;
+    for (int i = 0; i < n; ++i) lines.push_back(m_geo.addLine(pts[static_cast<size_t>(i)], pts[static_cast<size_t>((i + 1) % n)]));
+    auto add = [this](SkConstraint k) { if (m_geo.canAdd(k)) m_geo.addConstraint(k); };
+    for (int p : pts) add({ConType::PointOnEntity, p, circle});
+    for (int i = 1; i < n; ++i) add({ConType::Equal, lines[0], lines[static_cast<size_t>(i)]});
+    // Waagerechte Unterkante, wenn die Ecke annaehernd so gesetzt wurde
+    addAutoHV(lines[0]);
+    m_pending.clear();
+    resolve();
+}
+
+// Langloch (Mitte zu Mitte): zwei Halbkreise, tangential verbunden
+void SketchCanvas::slotTo(const QPointF& side)
+{
+    if (m_pending.size() < 2) return;
+    const int c1 = m_pending[0], c2 = m_pending[1];
+    const auto A = m_geo.points[static_cast<size_t>(c1)], B = m_geo.points[static_cast<size_t>(c2)];
+    const double dx = B.x - A.x, dy = B.y - A.y, len = std::hypot(dx, dy);
+    if (len < 1e-6) return;
+    const double nx = -dy / len, ny = dx / len;
+    const double w = std::abs((side.x() - A.x) * nx + (side.y() - A.y) * ny);
+    if (w < 1e-6) return;
+    const int a1 = m_geo.addPoint(A.x + nx * w, A.y + ny * w), a2 = m_geo.addPoint(A.x - nx * w, A.y - ny * w);
+    const int b1 = m_geo.addPoint(B.x + nx * w, B.y + ny * w), b2 = m_geo.addPoint(B.x - nx * w, B.y - ny * w);
+    const int top = m_geo.addLine(a1, b1), bottom = m_geo.addLine(b2, a2);
+    const int arcB = m_geo.addArc(c2, b2, b1), arcA = m_geo.addArc(c1, a1, a2);
+    const int axis = m_geo.addLine(c1, c2, true);
+    auto add = [this](SkConstraint k) { if (m_geo.canAdd(k)) m_geo.addConstraint(k); };
+    for (int l : {top, bottom}) for (int a : {arcA, arcB}) add({ConType::Tangent, l, a});
+    add({ConType::Equal, arcA, arcB});
+    addAutoHV(axis);
+    m_pending.clear();
+    resolve();
+}
+
+// Ecke zweier Linien abrunden: Bogen tangential an beide Linien, Radius bemasst
+bool SketchCanvas::filletCorner(int p, double r, const std::string& expr)
+{
+    std::vector<int> lines;
+    for (size_t i = 0; i < m_geo.entities.size(); ++i) {
+        const auto& e = m_geo.entities[i];
+        if (e.type == SkType::Line && !e.construction && (e.p0 == p || e.p1 == p)) lines.push_back(static_cast<int>(i));
+    }
+    if (lines.size() != 2) {
+        m_message = QString::fromUtf8("Rundung: eine Ecke anklicken, an der genau zwei Linien zusammentreffen.");
+        return false;
+    }
+    const auto P = m_geo.points[static_cast<size_t>(p)];
+    auto other = [&](int l) { const auto& e = m_geo.entities[static_cast<size_t>(l)]; return e.p0 == p ? e.p1 : e.p0; };
+    const auto A = m_geo.points[static_cast<size_t>(other(lines[0]))], B = m_geo.points[static_cast<size_t>(other(lines[1]))];
+    double ux = A.x - P.x, uy = A.y - P.y, vx = B.x - P.x, vy = B.y - P.y;
+    const double lu = std::hypot(ux, uy), lv = std::hypot(vx, vy);
+    if (lu < 1e-9 || lv < 1e-9) return false;
+    ux /= lu; uy /= lu; vx /= lv; vy /= lv;
+    const double theta = std::acos(std::clamp(ux * vx + uy * vy, -1.0, 1.0));
+    if (theta < 1e-3 || theta > M_PI - 1e-3) { m_message = QString::fromUtf8("Rundung: die Linien sind parallel."); return false; }
+    const double t = r / std::tan(theta / 2);
+    if (t >= lu || t >= lv) { m_message = QString::fromUtf8("Rundung: Radius ist zu groß für diese Ecke."); return false; }
+    const double bx = ux + vx, by = uy + vy, bl = std::hypot(bx, by);
+    const double d = r / std::sin(theta / 2);
+    const int t1 = m_geo.addPoint(P.x + ux * t, P.y + uy * t);
+    const int t2 = m_geo.addPoint(P.x + vx * t, P.y + vy * t);
+    const int cp = m_geo.addPoint(P.x + bx / bl * d, P.y + by / bl * d);
+    // Linien an die Tangentenpunkte verlegen
+    for (int k = 0; k < 2; ++k) {
+        auto& e = m_geo.entities[static_cast<size_t>(lines[static_cast<size_t>(k)])];
+        (e.p0 == p ? e.p0 : e.p1) = k == 0 ? t1 : t2;
+    }
+    // Bogen gegen den Uhrzeigersinn: von t1 nach t2, wenn t2 links von (Mitte -> t1) liegt
+    const auto C = m_geo.points[static_cast<size_t>(cp)];
+    const auto T1 = m_geo.points[static_cast<size_t>(t1)], T2 = m_geo.points[static_cast<size_t>(t2)];
+    const double cross = (T1.x - C.x) * (T2.y - C.y) - (T1.y - C.y) * (T2.x - C.x);
+    const int arc = cross > 0 ? m_geo.addArc(cp, t1, t2) : m_geo.addArc(cp, t2, t1);
+    // Abhaengigkeiten am alten Eckpunkt fallen weg
+    std::vector<SkConstraint> kept;
+    for (const auto& k : m_geo.constraints) {
+        const bool pointCon = k.type == ConType::Coincident || k.type == ConType::Distance || k.type == ConType::DistanceX
+            || k.type == ConType::DistanceY || k.type == ConType::Fix || k.type == ConType::PointOnEntity || k.type == ConType::Midpoint;
+        if (pointCon && (k.a == p || ((k.type == ConType::Coincident || k.type == ConType::Distance || k.type == ConType::DistanceX
+                                       || k.type == ConType::DistanceY) && k.b == p))) continue;
+        kept.push_back(k);
+    }
+    m_geo.constraints = kept;
+    m_geo.purgeUnusedPoints();
+    // Indizes haben sich evtl. verschoben: Bogen ist die letzte Entitaet
+    const int arcIdx = static_cast<int>(m_geo.entities.size()) - 1;
+    (void)arc;
+    auto add = [this](SkConstraint k) { if (m_geo.canAdd(k)) m_geo.addConstraint(k); };
+    add({ConType::Tangent, lines[0], arcIdx});
+    add({ConType::Tangent, lines[1], arcIdx});
+    SkConstraint rad{ConType::Radius, arcIdx};
+    rad.value = r;
+    rad.ref.expr = expr;
+    rad.labelX = r * 0.7; rad.labelY = r * 0.7;
+    tryAdd(rad);
+    resolve();
+    return true;
 }
 
 int SketchCanvas::circleTo(double r)
@@ -1267,6 +1430,12 @@ void SketchCanvas::updateStatus()
     case Tool::Rectangle: hint = m_pending.empty() ? "Rechteck: erste Ecke klicken" : "Rechteck: gegenüberliegende Ecke klicken"; break;
     case Tool::Circle: hint = m_pending.empty() ? "Kreis: Mittelpunkt klicken" : "Kreis: Radius festlegen"; break;
     case Tool::Arc: hint = m_pending.empty() ? "Bogen: Mittelpunkt klicken" : (m_pending.size() == 1 ? "Bogen: Startpunkt klicken" : "Bogen: Endpunkt klicken (gegen den Uhrzeigersinn)"); break;
+    case Tool::Polygon: hint = m_pending.empty() ? QString::fromUtf8("Polygon (%1 Ecken): Mittelpunkt klicken").arg(m_polySides)
+                                                 : QString::fromUtf8("Polygon: Ecke klicken"); break;
+    case Tool::Slot: hint = m_pending.empty() ? QString::fromUtf8("Langloch: ersten Bogenmittelpunkt klicken")
+                          : m_pending.size() == 1 ? QString::fromUtf8("Langloch: zweiten Bogenmittelpunkt klicken")
+                                                  : QString::fromUtf8("Langloch: Breite festlegen"); break;
+    case Tool::SketchFillet: hint = QString::fromUtf8("Rundung: Ecke zwischen zwei Linien anklicken"); break;
     case Tool::Point: hint = QString::fromUtf8("Punkt: Bohrungsmitte klicken (Esc beendet)"); break;
     case Tool::Dimension: hint = m_picked.empty() ? "Bemaßung: Linie, Kreis/Bogen oder Punkt wählen" : "Bemaßung: zweites Objekt wählen oder Maß platzieren"; break;
     default:

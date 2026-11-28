@@ -3,6 +3,7 @@
 #include "core/Features.h"
 
 #include <TopoDS_Edge.hxx>
+#include <TopoDS_Face.hxx>
 #include <gp_Pnt.hxx>
 
 #include <vector>
@@ -78,6 +79,27 @@ protected:
 
 // Mittelpunkt einer Kante (zum Speichern der Kantenauswahl)
 gp_Pnt edgeMidpoint(const TopoDS_Edge& e);
+
+// Wandung: Koerper aushoehlen. Gewaehlte Flaechen (ueber einen Punkt auf der Flaeche
+// gespeichert) werden entfernt und bleiben offen; ohne Flaechen entsteht ein geschlossener Hohlkoerper.
+class ShellFeature : public Feature {
+public:
+    explicit ShellFeature(std::string name, double thickness = 2) : Feature(std::move(name)), thickness(thickness) {}
+    FeatureType type() const override { return FeatureType::Shell; }
+    TopoDS_Shape apply(const TopoDS_Shape& body) const override;
+    std::vector<ParamSlot> params() override { return {{"t", "Dicke", &m_ref, &thickness, false}}; }
+
+    std::vector<gp_Pnt> faces;
+    double thickness;
+    bool outside = false; // Wand nach aussen statt nach innen
+private:
+    ParamRef m_ref;
+};
+
+// Ein Punkt, der sicher auf der Flaeche liegt (zum Speichern einer Flaechenauswahl)
+gp_Pnt facePoint(const TopoDS_Face& f);
+// Flaeche des Koerpers, auf der der Punkt liegt (Abstand < tol), sonst Null-Flaeche
+TopoDS_Shape faceAt(const TopoDS_Shape& body, const gp_Pnt& p, double tol = 0.05);
 
 enum class WorldAxis { X, Y, Z };
 

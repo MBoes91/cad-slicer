@@ -8,6 +8,14 @@
 #include <BRepExtrema_DistShapeShape.hxx>
 #include <BRepFilletAPI_MakeChamfer.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
+#include <BRepAlgoAPI_Cut.hxx>
+#include <BRepClass_FaceClassifier.hxx>
+#include <BRepOffsetAPI_MakeOffsetShape.hxx>
+#include <BRepOffsetAPI_MakeThickSolid.hxx>
+#include <BRepTools.hxx>
+#include <BRep_Tool.hxx>
+#include <Geom_Surface.hxx>
+#include <TopTools_ListOfShape.hxx>
 #include <BRepPrimAPI_MakeCone.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
 #include <Bnd_Box.hxx>
@@ -224,6 +232,64 @@ TopoDS_Shape ChamferFeature::apply(const TopoDS_Shape& body) const
     for (const auto& e : findEdges(body)) mk.Add(size, e);
     mk.Build();
     if (!mk.IsDone()) throw std::runtime_error("Fase nicht moeglich (Abstand zu gross?)");
+    return mk.Shape();
+}
+
+// --- Wandung -------------------------------------------------------------------------
+
+gp_Pnt facePoint(const TopoDS_Face& f)
+{
+    double u0, u1, v0, v1;
+    BRepTools::UVBounds(f, u0, u1, v0, v1);
+    Handle(Geom_Surface) s = BRep_Tool::Surface(f);
+    // Mitte des Parameterbereichs, sonst ein Rasterpunkt, der in der Flaeche liegt
+    for (int n : {1, 5, 11}) {
+        for (int i = 0; i < n; ++i) {
+            for (int j = 0; j < n; ++j) {
+                const double u = u0 + (u1 - u0) * (i + 0.5) / n, v = v0 + (v1 - v0) * (j + 0.5) / n;
+                BRepClass_FaceClassifier c(f, gp_Pnt2d(u, v), 1e-7);
+                if (c.State() == TopAbs_IN) return s->Value(u, v);
+            }
+        }
+    }
+    return s->Value((u0 + u1) / 2, (v0 + v1) / 2);
+}
+
+TopoDS_Shape faceAt(const TopoDS_Shape& body, const gp_Pnt& p, double tol)
+{
+    const TopoDS_Shape v = BRepBuilderAPI_MakeVertex(p).Shape();
+    TopoDS_Shape best;
+    double bestDist = tol;
+    for (TopExp_Explorer ex(body, TopAbs_FACE); ex.More(); ex.Next()) {
+        BRepExtrema_DistShapeShape d(v, ex.Current());
+        if (d.IsDone() && d.Value() < bestDist) { bestDist = d.Value(); best = ex.Current(); }
+    }
+    return best;
+}
+
+TopoDS_Shape ShellFeature::apply(const TopoDS_Shape& body) const
+{
+    if (body.IsNull()) throw std::runtime_error("Kein Koerper vorhanden");
+    if (thickness <= 0) throw std::runtime_error("Wanddicke muss groesser als 0 sein");
+    const double off = outside ? thickness : -thickness;
+    if (faces.empty()) {
+        // Geschlossener Hohlkoerper: innen versetzte Huelle abziehen (bzw. aussen dazu)
+        BRepOffsetAPI_MakeOffsetShape mk;
+        mk.PerformByJoin(body, off, 1e-4);
+        if (!mk.IsDone()) throw std::runtime_error("Wandung nicht moeglich (Dicke zu gross?)");
+        if (outside) return BRepAlgoAPI_Cut(mk.Shape(), body).Shape();
+        return BRepAlgoAPI_Cut(body, mk.Shape()).Shape();
+    }
+    TopTools_ListOfShape remove;
+    for (const gp_Pnt& p : faces) {
+        const TopoDS_Shape f = faceAt(body, p, 0.5);
+        if (f.IsNull()) throw std::runtime_error("Flaeche nicht mehr gefunden - bitte neu waehlen");
+        remove.Append(f);
+    }
+    BRepOffsetAPI_MakeThickSolid mk;
+    mk.MakeThickSolidByJoin(body, remove, off, 1e-4);
+    mk.Build();
+    if (!mk.IsDone()) throw std::runtime_error("Wandung nicht moeglich (Dicke zu gross?)");
     return mk.Shape();
 }
 
